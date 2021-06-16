@@ -8,7 +8,7 @@ The purpose of this project is to demonstrate how we can use a 360° camera in a
 
 As a starting point, we will use a 360° camera with Android operating system and Finwe's LiveSYNC Camera app installed to it, as well as Finwe's dockerized SignalingServer for messaging (WebRTC requires signaling but does not include it) in a local home/office network.
 
-We will build a simple Gstreamer pipeline on an Ubuntu Linux host, make it communicate with the 360° camera via the SignalingServer using websockets, and then receive a live 360° videostream using peer-to-peer WebRTC connection. The video stream can be further manipulated with other GStreamer plugins in the pipeline to implement a desired use case.
+We will build a simple Gstreamer pipeline on an Ubuntu Linux VM, make it communicate with the 360° camera via the SignalingServer using websockets, and then receive a live 360° videostream using peer-to-peer WebRTC connection. The video stream can be further manipulated with other GStreamer plugins in the pipeline to implement a desired use case.
 
 ## Hardware
 
@@ -25,7 +25,7 @@ The following hardware is required:
 3. Configure LiveSYNC camera app via its settings.ini file in the camera (edit /Android/data/fi.finwe.livesync.camera.labpano.pilot/files/settings.ini and ensure 'webrtc_signalling_server_url' points to the PC running the SignalingServer)
 4. Run the SignalingServer (e.g. 'docker run -p 443:443 finwe/signaling-server:0.0.22-amd64'), if not configured to auto-start. You should see this in the console when the SignalingServer is ready:
 ```
-docker run -p 443:443 finwe/signaling-server:0.0.22-amd64
+> docker run -p 443:443 finwe/signaling-server:0.0.22-amd64
 [10.08.06] Server listening at port 443
 ```
 5. Start LiveSYNC Camera app in the camera. It should connect to the SignalingServer, show "Live View / Waiting for viewer to connect...", and a video preview on screen. In the SignalingServer's console/log you should see something like this:
@@ -49,7 +49,7 @@ The setup is now ready and working, waiting for a video client to show up and st
 You can test the setup with a web player that Finwe has developed and bundled with the SignalingServer. Simply open a browser window to 
 
 ```
-https://192.168.100/
+https://192.168.1.100/
 ``` 
 
 , or whatever is the IP address of your SignalingServer machine. Notice that **using HTTPS is mandatory** and you need to **create a security exception in Chrome to proceed to the player's web page** (or add the SignalingServer's certificate to your browser). WebRTC requires that all communication is encrypted.
@@ -185,9 +185,9 @@ There are pleanty of stats and also dozens of live-updating graphs. Extremely us
 
 The SignalingServer is required for establishing a connection between the peers, ie. the 360° camera and the web player. Video playback does not require it anymore after streaming begins. 
 
-However, we have implemented several control commands for exchanging information between the player and the camera. These are transmitted as control commands from the web player to the camera via the SignalingServer. In addition, the camera send messages to the web player to inform e.g. how many simultaneous clients it supports and whether there is room to join, or not.
+However, we have implemented several control commands for exchanging information between the player and the camera. These are transmitted from the web player to the camera via the SignalingServer. In addition, the camera send messages to the web player to inform e.g. how many simultaneous clients it supports and whether there is room to join, or not.
 
-For example, you can click a '+' or '-' button in the web player's UI to zoom in/out. As a result of a button click, the web player will send a message to the camera. You can see this message in the SignalingServer's debug log:
+For example, you can click a '+' or '-' button in the web player's UI to zoom in/out. As a result of the button click, the web player will send a message to the camera. You can see this message in the SignalingServer's console/log:
 
 ```
 [10.38.20] RECV: 'message': zoom-in
@@ -196,16 +196,44 @@ For example, you can click a '+' or '-' button in the web player's UI to zoom in
 
 ## Ubuntu Linux host
 
-The steps above were just a preparation for the actual task: building a GStreamer pipeline with WebRTC input from the 360° camera. We will now proceed to replacing the web player with GStreamer as a video client.
+The steps above were just a preparation for the actual task: building a GStreamer pipeline with WebRTC input from the 360° camera. We will now proceed to replace the web player with GStreamer as the video client.
 
-The first step is to setup a host machine. Here we will install Ubuntu 18.04 into VirtualBox on a Mac, but you might as well use a different host machine (such as Windows), or install Ubuntu natively to a PC or headless box (such as NVidia Xavier devkit).
+The first step is to setup Ubuntu. Here we will install Ubuntu 18.04 into VirtualBox on a Mac, but you might as well use a different host machine such as Windows for running the VM, or install Ubuntu natively to a PC or a headless box such as NVidia Xavier devkit.
 
 ### Installing Ubuntu on VirtualBox
 
 It is not in the scope of this project to guide this step-by-step. Follow for example this blog post:
+
 https://codingwithmanny.medium.com/installing-ubuntu-18-04-on-mac-os-with-virtualbox-ac3b39678602
 
-Install the usual updates to the OS/apps after the installer has finished and Ubuntu booted for the first time.
+Install the usual updates to the OS/apps after the installer has finished and Ubuntu booted for the first time. Enabling copy-pasting and file sharing with the host machine is recommended.
+
+To get a webcam working for WebRTC examples/demos inside Ubuntu VM, download and install VirtualBox extensions from here and then reboot both the host and guest OS, and select Devices -> Webcames -> [your webcam].
+
+https://www.virtualbox.org/wiki/Downloads
+
+For example Cheese did not seem to work like this, but capturing a snapshot with fswebcam did work:
+
+```
+> fswebcam -r 1920x1080 --jpeg 90 --save test.jpg
+```
+
+Also, live video stream worked through guvcview:
+```
+> guvcview
+```
+
+Live video worked also via VLC (although, with poor frame rate):
+```
+> vlc v4l2:///dev/video0:chroma=mjpg:width=1920:height=1080
+```
+
+The camera was also listed via v4l2:
+```
+> v4l2-ctl --list-devices
+```
+
+Once completed, start Ubuntu and log in to the desktop environment. Perform the next steps in this environment.
 
 ## Installing GStreamer
 
@@ -214,22 +242,22 @@ Run this in terminal to install GStreamer:
 > sudo apt-get install gstreamer1.0-tools gstreamer1.0-alsa gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
 ````
 
-To compile programs for GStreamer pipeline, we also need the dev packages:
-`````
-sudo apt-get install libgstreamer1.0-dev
+In order to compile programs for GStreamer, we also need the development packages:
+````
+> sudo apt-get install libgstreamer1.0-dev
 ````
 
-Create a directory for your source files and go there:
+Create a directory for your source files, and navigate there:
 ````
 > mkdir ~/Source
 > cd ~/Source
 `````
 
-Create 'hello world':
+Create a new source code file for a simple 'hello world' application:
 ````
 > nano basic-tutorial-1.c
 `````
-Copy-paste this:
+Copy-paste this code to the text editor:
 ````
 #include <gst/gst.h>
 
@@ -267,16 +295,16 @@ main (int argc, char *argv[])
   return 0;
 }
 ````
-Save and exit by *CTRL-O*, then *CTRL-X*.
+Save the file with *CTRL-O* and then exit with *CTRL-X*.
 
 Install required packages for compiling the program:
 ````
-sudo apt-get install pkg-config
+> sudo apt-get install pkg-config
 ````
 
-Then, compile the program:
-````
-gcc basic-tutorial-1.c -o basic-tutorial-1 `pkg-config --cflags --libs gstreamer-1.0`
+Compile the program:
+```
+> gcc basic-tutorial-1.c -o basic-tutorial-1 `pkg-config --cflags --libs gstreamer-1.0`
 ```
 
 Run the program:
@@ -286,5 +314,68 @@ Run the program:
 
 This will play a video stream from network in a window on the Ubuntu desktop.
 
-GStreamer and development environment is now successfully installed.
+> GStreamer and development environment is now successfully installed.
+
+## About GStreamer version
+
+GStreamer comes with a large collection of plugins and one of them is for adding support for WebRTC. This is a fairly new plugin, and just like WebRTC itself, has been under heavy development during the past few years. The version that can be found from Ubuntu's package repository is related to GStreamer version, which is a fairly old one.
+
+Run this to check the currently installed GStreamer version:
+```
+> gst-launch-1.0 --gst-version
+GStreamer Core Library version 1.14.5
+```
+
+Unfortunately, installing a newer version is not a simple task. GStreamer download page contains pre-built binaries for Windows, Mac, Android and iOS. Linux users, as usual, need to use the version from the package manager, or build another version from source code.
+
+So, you could upgrade Ubuntu itself to a newer version, such as 20.04, to get a newer version of GStreamer. Upgrading only GStreamer libraries typically means compiling them all from sources, and there are lots of dependencies to handle.
+
+Here we start with the version available for Ubuntu 18.04, which is 1.14.5.
+
+## GStreamer and webcam
+
+For testing WebRTC examples, we should have a webcam available in Ubuntu. Nowadays, webcams work pretty well in Linux, but it is still possible to encounter devices that just won't work. When Ubuntu is running inside VirtualBox or other virtualization technology, it can be much more trickier to get a webcam working.
+
+With GStreamer, you can try to following after ensuring that a webcam works at least with fswebcam and guvcview:
+```
+> v4l2-ctl --list-devices
+> v4l2-ctl --list-formats-ext
+> gst-launch-1.0 v4l2src device="/dev/video0" ! "image/jpeg, width=640, height=480, framerate=5/1, format=MJPG" ! jpegdec ! autovideosink
+```
+
+This worked on a Macbook Pro running Ubuntu 18.04 on VirtualBox and using Logitech HD Pro Webcam c920 USB webcam.
+
+## GStreamer WebRTC demos
+
+Now that GStreamer is tested to work, let's proceed to testing the WebRTC plugin. There are a few demos that are documented here:
+
+https://github.com/centricular/gstwebrtc-demos
+
+The repository has been moved and its instructions are now outdated, but we will use it here anyway as our WebRTC plugin is an old version, too.
+
+### Cloning the examples repository
+
+Create a directory for the examples, and navigate there.
+````
+> cd ~/Source
+> mkdir examples
+> cd examples
+`````
+
+Install git:
+````
+> sudo apt-get install git
+````
+
+Clone the examples repository using git:
+````
+> git clone https://github.com/centricular/gstwebrtc-demos.git
+````
+
+
+
+
+
+
+
 
