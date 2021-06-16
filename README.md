@@ -372,10 +372,354 @@ Clone the examples repository using git:
 > git clone https://github.com/centricular/gstwebrtc-demos.git
 ````
 
+### Running a basic WebRTC example
 
+#### Web GUI
 
+Install Python2:
+````
+> sudo apt install python
+`````
 
+Serve the web GUI:
+````
+> cd ~/Source/examples/gstwebrtc-demos/sendrecv/js
+> python -m SimpleHTTPServer 8080
+````
 
+Open a web browser and navigate to:
+````
+http://localhost:8080
+````
 
+This will open a simple GUI, but it fill fail after few attempts to connect to the signaling server that comes with the examples - we haven't started that yet.
 
+#### Signaling server
 
+For running the signaling server, we need to add websockets to the current Python3 installation. First, let's install pip so we can easily add Python modules:
+
+````
+> sudo apt install python3-pip
+````
+
+Now, install websocket module:
+````
+> pip3 install websocket websockets
+````
+
+Before starting the signaling server, we need to generate a certificate for HTTPS. The examples have a script for that:
+````
+> ./generate_cert.sh
+````
+
+Now we can start the signaling server for the examples:
+````
+python3 simple_server.py
+`````
+
+#### Security exception
+
+Return to browser, and navigate to:
+````
+https://localhost:8443/health
+`````
+
+Remember to use HTTPS here. Firefox warns about a security risk, as the certificate was self-generated. Click Advanced and accept the exception.
+
+The page should load and show a simple 'OK' message at the top.
+
+#### Web GUI, returned
+
+Now, still using the browser, return to:
+````
+http://localhost:8080
+````
+
+This time, the GUI should be able to connect to the signaling server and show this status: "Registered with server, waiting for call". There is also a text showing peer ID, for example "5092".
+
+Also, the signaling server's console output should show something like this:
+
+````
+Starting server...
+Using TLS with keys in ''
+Listening on https://:8443
+Connected to ('127.0.0.1', 39822)
+Registered peer '5092' at ('127.0.0.1', 39822)
+Sending keepalive ping to ('127.0.0.1', 39822) in recv
+Sending keepalive ping to ('127.0.0.1', 39822) in recv
+Sending keepalive ping to ('127.0.0.1', 39822) in recv
+Sending keepalive ping to ('127.0.0.1', 39822) in recv
+````
+
+Notice how the same peer ID 5092 appears in the log as a registered peer. 
+
+The signaling server and web GUI are now OK, next we need to compile a WebRTC client.
+
+#### Send-Receive WebRTC Client (Python)
+
+In terminal, navigate to:
+````
+> cd ~/Source/examples/gstwebrtc-demos/sendrecv/gst
+````
+
+We should be able to run the Python version of the example, but if fails as follows:
+````
+> python3 webrtc_sendrecv.py 
+Traceback (most recent call last):
+  File "webrtc_sendrecv.py", line 13, in <module>
+    gi.require_version('GstWebRTC', '1.0')
+  File "/usr/lib/python3/dist-packages/gi/__init__.py", line 130, in require_version
+    raise ValueError('Namespace %s not available' % namespace)
+ValueError: Namespace GstWebRTC not available
+````
+
+To fix this issue, install this package:
+````
+> sudo apt install gir1.2-gst-plugins-bad-1.0
+````
+
+Next, we get another issues:
+````
+> python3 webrtc_sendrecv.py 
+Missing gstreamer plugins: ['nice']
+````
+
+This happens, because the current GStreamer installation does not contain the required 'nice' plugin:
+````
+gst-inspect-1.0 nice
+[Nothing found]
+````
+
+To fix this issue, install this package:
+````
+> sudo apt-get install gstreamer1.0-nice
+````
+
+Now the plugin can be found:
+````
+> gst-inspect-1.0 nice
+Plugin Details:
+  Name                     nice
+  Description              Interactive UDP connectivity establishment
+  Filename                 /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstnice.so
+  Version                  0.1.14
+  License                  LGPL
+  Source module            libnice
+  Binary package           libnice
+  Origin URL               http://telepathy.freedesktop.org/wiki/
+
+  nicesrc: ICE source
+  nicesink: ICE sink
+
+  2 features:
+  +-- 2 elements
+`````
+
+If you try to run it again, all the components can be found, but we get an error about missing peer ID:
+````
+> python3 webrtc_sendrecv.py 
+usage: webrtc_sendrecv.py [-h] [--server SERVER] peerid
+webrtc_sendrecv.py: error: the following arguments are required: peerid
+````
+
+In addition to peer ID, we actually need to specify the server as well, else the script will use a publicly available signaling server. To keep things simple, let's start with this default (public) signaling server. Open a browser and navigate here:
+
+````
+https://webrtc.nirbheek.in/
+````
+
+Notice the peer ID, e.g. 2767, and try to run the script again:
+````
+> python3 webrtc_sendrecv.py 2767
+Traceback (most recent call last):
+  File "webrtc_sendrecv.py", line 57, in on_offer_created
+    offer = reply['offer']
+TypeError: 'Structure' object is not subscriptable
+````
+
+This should have worked, but there is a bug in the Python script. We'll fix that next:
+````
+> nano webrtc_sendrecv.py
+````
+Find this text:
+```
+offer = reply['offer']
+```
+... and replace it with this:
+````
+offer = reply.get_value('offer')
+````
+
+Finally, the example runs:
+````
+> python3 webrtc_sendrecv.py 2151
+Sending offer:
+v=0
+o=- 3027051069768005227 0 IN IP4 0.0.0.0
+s=-
+t=0 0
+a=ice-options:trickle
+a=msid-semantic:WMS sendrecv
+m=video 9 UDP/TLS/RTP/SAVPF 97
+c=IN IP4 0.0.0.0
+a=setup:actpass
+a=ice-ufrag:cBmyufUM+QHlEKu0Q4Ioo+pG2ND7/zRY
+a=ice-pwd:3KyE29m6Vx11BUyxEQcTdfYgzvo7UzHq
+a=sendrecv
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:97 VP8/90000
+a=rtcp-fb:97 nack pli
+a=framerate:30
+a=ssrc:2612173537 msid:user1672718228@host-e685f0ce webrtctransceiver0
+a=ssrc:2612173537 cname:user1672718228@host-e685f0ce
+a=mid:video0
+a=fingerprint:sha-256 43:F5:CD:A0:68:85:4E:E8:E6:41:FD:3C:48:D1:BB:5E:6B:54:B4:2D:53:26:50:E6:14:3A:C4:30:F9:51:56:E8
+m=audio 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=setup:actpass
+a=ice-ufrag:eqBM0z3ZCKZztmg+MK/2TED8z+dIMm3Y
+a=ice-pwd:xLm7NcMASvJLNp5NYSWAQRfSQJkTBNdo
+a=sendrecv
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:96 OPUS/48000/2
+a=rtcp-fb:96 nack pli
+a=fmtp:96 sprop-maxcapturerate=48000;sprop-stereo=0
+a=ssrc:3308120387 msid:user1672718228@host-e685f0ce webrtctransceiver1
+a=ssrc:3308120387 cname:user1672718228@host-e685f0ce
+a=mid:audio1
+a=fingerprint:sha-256 43:F5:CD:A0:68:85:4E:E8:E6:41:FD:3C:48:D1:BB:5E:6B:54:B4:2D:53:26:50:E6:14:3A:C4:30:F9:51:56:E8
+
+Received answer:
+v=0
+o=- 1934395435330990047 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=msid-semantic: WMS lSiHqPoixBnlJzbsTDWoCfKr5w0g0u17IwBW
+m=video 9 UDP/TLS/RTP/SAVPF 97
+c=IN IP4 0.0.0.0
+a=rtcp:9 IN IP4 0.0.0.0
+a=ice-ufrag:orMw
+a=ice-pwd:TdZBVyBRVafpbs9tH9NksClz
+a=ice-options:trickle
+a=fingerprint:sha-256 D3:82:C5:60:2E:EE:F0:8C:A0:1F:79:D8:96:0D:54:2F:EA:51:98:BD:E7:15:88:E0:A9:61:66:D0:CD:36:9F:12
+a=setup:active
+a=mid:video0
+a=sendrecv
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:97 VP8/90000
+a=rtcp-fb:97 nack pli
+a=ssrc:761656839 cname:cN+WwG+YITxNsA2B
+a=ssrc:761656839 msid:lSiHqPoixBnlJzbsTDWoCfKr5w0g0u17IwBW 3383712c-6658-4168-bbf9-2667c78cc669
+a=ssrc:761656839 mslabel:lSiHqPoixBnlJzbsTDWoCfKr5w0g0u17IwBW
+a=ssrc:761656839 label:3383712c-6658-4168-bbf9-2667c78cc669
+m=audio 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=rtcp:9 IN IP4 0.0.0.0
+a=ice-ufrag:0Lb0
+a=ice-pwd:ifSM/7G9qEfcA81ujpNW0P5j
+a=ice-options:trickle
+a=fingerprint:sha-256 D3:82:C5:60:2E:EE:F0:8C:A0:1F:79:D8:96:0D:54:2F:EA:51:98:BD:E7:15:88:E0:A9:61:66:D0:CD:36:9F:12
+a=setup:active
+a=mid:audio1
+a=sendrecv
+a=rtcp-mux
+a=rtpmap:96 OPUS/48000/2
+a=fmtp:96 minptime=10;useinbandfec=1
+a=ssrc:721885212 cname:cN+WwG+YITxNsA2B
+a=ssrc:721885212 msid:lSiHqPoixBnlJzbsTDWoCfKr5w0g0u17IwBW 95ab221d-5ab6-47db-a49e-90f1ce354eb9
+a=ssrc:721885212 mslabel:lSiHqPoixBnlJzbsTDWoCfKr5w0g0u17IwBW
+a=ssrc:721885212 label:95ab221d-5ab6-47db-a49e-90f1ce354eb9
+````
+
+The web browser now asks permission to access camera and microphone, and the connection is established.
+
+Next, let's try the same with the signaling server running on our own computer:
+````
+> python3 webrtc_sendrecv.py --server wss://localhost:8443 6797
+````
+
+The connection is established, and if you go to the web browser, you should see a bouncing ball demo running.
+
+> The demo is not that fancy, and seems to crash every now and then... perhaps a bit of a disappoinment after all the steps :)
+
+#### Send-Receive WebRTC Client (C)
+
+In terminal, navigate to:
+````
+> cd ~/Source/examples/gstwebrtc-demos/sendrecv/gst
+````
+
+We need to compile the C code for this example, but trying to run 'make' in this directory produces errors:
+````
+> make
+Package gstreamer-sdp-1.0 was not found in the pkg-config search path.
+Perhaps you should add the directory containing `gstreamer-sdp-1.0.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'gstreamer-sdp-1.0' found
+Package gstreamer-webrtc-1.0 was not found in the pkg-config search path.
+Perhaps you should add the directory containing `gstreamer-webrtc-1.0.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'gstreamer-webrtc-1.0' found
+Package json-glib-1.0 was not found in the pkg-config search path.
+Perhaps you should add the directory containing `json-glib-1.0.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'json-glib-1.0' found
+Package gstreamer-sdp-1.0 was not found in the pkg-config search path.
+Perhaps you should add the directory containing `gstreamer-sdp-1.0.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'gstreamer-sdp-1.0' found
+Package gstreamer-webrtc-1.0 was not found in the pkg-config search path.
+Perhaps you should add the directory containing `gstreamer-webrtc-1.0.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'gstreamer-webrtc-1.0' found
+Package json-glib-1.0 was not found in the pkg-config search path.
+Perhaps you should add the directory containing `json-glib-1.0.pc'
+to the PKG_CONFIG_PATH environment variable
+No package 'json-glib-1.0' found
+"gcc" -O0 -ggdb -Wall -fno-omit-frame-pointer  webrtc-sendrecv.c  -o webrtc-sendrecv
+webrtc-sendrecv.c:9:10: fatal error: gst/gst.h: No such file or directory
+ #include <gst/gst.h>
+          ^~~~~~~~~~~
+compilation terminated.
+Makefile:6: recipe for target 'webrtc-sendrecv' failed
+make: *** [webrtc-sendrecv] Error 1
+````
+
+This happens, because many of the required libraries have not been installed yet. Let's fix this:
+````
+> sudo apt-get install libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-doc gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-qt5 gstreamer1.0-pulseaudio
+> sudo apt-get install libjson-glib-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev
+````
+
+Now running 'make' succeeds:
+```
+> make
+"gcc" -O0 -ggdb -Wall -fno-omit-frame-pointer -pthread -I/usr/include/gstreamer-1.0 -I/usr/include/json-glib-1.0 -I/usr/include/libsoup-2.4 -I/usr/include/libxml2 -I/usr/include/glib-2.0 -I/usr/lib/x86_64-linux-gnu/glib-2.0/include webrtc-sendrecv.c -pthread -I/usr/include/gstreamer-1.0 -I/usr/include/json-glib-1.0 -I/usr/include/libsoup-2.4 -I/usr/include/libxml2 -I/usr/include/glib-2.0 -I/usr/lib/x86_64-linux-gnu/glib-2.0/include -lgstsdp-1.0 -lgstwebrtc-1.0 -lgstbase-1.0 -lgstreamer-1.0 -ljson-glib-1.0 -lsoup-2.4 -lgio-2.0 -lgobject-2.0 -lglib-2.0 -o webrtc-sendrecv
+```
+
+Open a browser and navigate here:
+
+````
+https://webrtc.nirbheek.in/
+````
+
+Check the peer ID from the web page, then run it like this:
+````
+> ./webrtc-sendrecv --peer-id 2920
+````
+
+You should get the bouncing ball again. Also video from my own webcam appeared on the Ubuntu desktop, showing live video view.
+
+One last thing with the demo is to use the signaling server running on our own computer:
+````
+> ./webrtc-sendrecv --server wss://localhost:8443 --peer-id 2920
+````
+
+Now, the same demo appears on the Firefox browser running in the Ubuntu VM, showing the bouncing ball as well as the live webcam video stream.
+
+## Using Finwe's Signaling Server component
+
+TODO
