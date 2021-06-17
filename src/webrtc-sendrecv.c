@@ -6,6 +6,14 @@
  *
  * Author: Nirbheek Chauhan <nirbheek@centricular.com>
  */
+
+/*
+ * Modified by Finwe Ltd. to work with Finwe's SignalingServer and a 360 camera 
+ * running Finwe's LiveSYNC app as a video source, instead of a browser JS app.
+ * 
+ * Author: Tapani Rantakokko <tapani.rantakokko@finwe.fi>
+ */
+
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
 
@@ -46,13 +54,11 @@ static GObject *send_channel, *receive_channel;
 static SoupWebsocketConnection *ws_conn = NULL;
 static enum AppState app_state = 0;
 static const gchar *peer_id = NULL;
-static const gchar *server_url = "wss://webrtc.nirbheek.in:8443";
+static const gchar *server_url = NULL;
 static gboolean disable_ssl = FALSE;
 static gboolean remote_is_offerer = FALSE;
 
 static GOptionEntry entries[] = {
-  {"peer-id", 0, 0, G_OPTION_ARG_STRING, &peer_id,
-      "String ID of the peer to connect to", "ID"},
   {"server", 0, 0, G_OPTION_ARG_STRING, &server_url,
       "Signalling server to connect to", "URL"},
   {"disable-ssl", 0, 0, G_OPTION_ARG_NONE, &disable_ssl, "Disable ssl", NULL},
@@ -752,8 +758,10 @@ connect_to_websocket_server_async (void)
   g_print ("Connecting to server...\n");
 
   /* Once connected, we will register */
-  soup_session_websocket_connect_async (session, message, NULL, NULL, NULL,
+  soup_session_websocket_connect_async (session, message, "rtc", NULL, NULL,
       (GAsyncReadyCallback) on_server_connected, message);
+
+
   app_state = SERVER_CONNECTING;
 }
 
@@ -788,7 +796,7 @@ main (int argc, char *argv[])
   GOptionContext *context;
   GError *error = NULL;
 
-  context = g_option_context_new ("- gstreamer webrtc sendrecv demo");
+  context = g_option_context_new ("- gstreamer webrtc 360 cam input demo");
   g_option_context_add_main_entries (context, entries, NULL);
   g_option_context_add_group (context, gst_init_get_option_group ());
   if (!g_option_context_parse (context, &argc, &argv, &error)) {
@@ -799,8 +807,8 @@ main (int argc, char *argv[])
   if (!check_plugins ())
     return -1;
 
-  if (!peer_id) {
-    g_printerr ("--peer-id is a required argument\n");
+  if (!server_url) {
+    g_printerr ("--server is a required argument\n");
     return -1;
   }
 

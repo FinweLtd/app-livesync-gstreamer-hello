@@ -722,4 +722,254 @@ Now, the same demo appears on the Firefox browser running in the Ubuntu VM, show
 
 ## Using Finwe's Signaling Server component
 
+GStreamer's WebRTC example sendrecv.c uses the Soup library (libsoup) for connecting to their signaling server, using WebSockets.
+
+However, Finwe's SignalingServer implementation uses Socket.IO Node.js server for signaling. Socket.IO is not a pure WebSockets implementation; it is more like an advanced version running on top of WebSockets. From their documentation:
+
+> Socket.IO is NOT a WebSocket implementation. Although Socket.IO indeed uses WebSocket as a transport when possible, it adds additional metadata to each packet. **That is why a WebSocket client will not be able to successfully connect to a Socket.IO server**, and a Socket.IO client will not be able to connect to a plain WebSocket server either.
+
+This means that we can't just use Soup with a different server url to connect to Finwe's SignalingServer; we need to use Socket.IO compatible library.
+
+GStreamer's WebRTC example sendrecv.c is written in C language. Socket.IO has a client library for 8 different programming languages, but not for C... However, there is a C++ version that we can use by creating some wrapping around it:
+
+https://github.com/socketio/socket.io-client-cpp
+
+### Socket.IO C++ client
+
+Let's get the source code for the C++ client, compile and install it:
+````
+> cd ~/Source
+> git clone --recurse-submodules https://github.com/socketio/socket.io-client-cpp.git
+> cd cd socket.io-client-cpp
+> sudo apt install cmake
+> cmake ./
+> sudo make install
+````
+
+This produces the following files:
+````
+/usr/local/include/sio_client.h
+/usr/local/include/sio_message.h
+/usr/local/include/sio_socket.h
+/usr/local/lib/libsioclient.a
+````
+
+Let's test it:
+````
+> cd ~/Source/socket.io-client-cpp/examples/Console
+> cmake ./
+> sudo make install
+````
+
+This produces *sio_console_demo* executable, which we can run as follows:
+````
+> ./sio_console_demo 
+[2021-06-17 13:59:20] [info] asio async_connect error: asio.system:111 (Connection refused)
+[2021-06-17 13:59:20] [info] Error getting remote endpoint: asio.system:107 (Transport endpoint is not connected)
+[2021-06-17 13:59:20] [error] handle_connect error: Connection refused
+[2021-06-17 13:59:25] [info] asio async_connect error: asio.system:111 (Connection refused)
+[2021-06-17 13:59:25] [info] Error getting remote endpoint: asio.system:107 (Transport endpoint is not connected)
+````
+
+We get connection errors, because main.cpp file has hardcoded URL on line 114 and we don't have a Socket.IO server running here.
+````
+h.connect("http://127.0.0.1:3000");
+`````
+
+The C++ client contains a simple echo server. We need to install and run it with Node.js, 
+whose version is *at least 10* (newer than what Ubuntu 18.04 package manager provides):
+````
+> cd ~/Source/socket.io-client-cpp/test/echo_server
+> sudo apt install curl
+> curl -sL https://deb.nodesource.com/setup_12.x | sudo -E bash -
+> sudo apt-get install -y nodejs
+> node --version
+v12.22.1
+> npm install socket.io express --save
+````
+
+Let's run the echo server:
+````
+> node index.js
+Listening on port 3000
+````
+
+Now, keep that running, and run the console demo again:
+````
+> cd ~/Source/socket.io-client-cpp/examples/Console
+[2021-06-17 15:10:16] [connect] Successful connection
+[2021-06-17 15:10:16] [connect] WebSocket Connection 127.0.0.1:3000 v-2 "WebSocket++/0.8.2" /socket.io/?EIO=4&transport=websocket&t=1623931816 101
+Type your nickname:
+````
+
+Also, the signaling server has logged something:
+````
+Listening on port 3000
+new connection
+````
+
+This means that we have successfully establised a connection from C++ code to (their example) Node.js Socket.IO server. Next task is to open a connection to Finwe's SignalingServer, running on another machine and using TLS/SSL.
+
+#### C++ client and Finwe SignalingServer
+
+The first thing is to edit the example app and change the server URL.
+````
+> cd ~/Source/socket.io-client-cpp/examples/Console
+> nano main.cpp
+````
+
+Find line with "http://localhost:3000" and change it to "https://192.168.1.115:443/rtc/socket.io" (use the IP of the machine that is running Finwe's SignalingServer). After recompiling, we get:
+````
+./sio_console_demo 
+[2021-06-17 14:05:52] [connect] Successful connection
+[2021-06-17 14:05:52] [error] handle_read_http_response error: websocketpp.transport:7 (End of File)
+[2021-06-17 14:05:57] [connect] Successful connection
+[2021-06-17 14:05:57] [error] handle_read_http_response error: websocketpp.transport:7 (End of File)
+[2021-06-17 14:06:04] [connect] Successful connection
+````
+
+The first problem seems to be that the Socket.IO C++ client was built without TLS/SSL support:
+```
+> cd ~/Source/socket.io-client-cpp/
+> cmake ./
+-- not define build type, set to release
+-- Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the system variable OPENSSL_ROOT_DIR (missing: OPENSSL_CRYPTO_LIBRARY OPENSSL_INCLUDE_DIR) 
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/finwedev/Source/socket.io-client-cpp
+```
+
+Install OpenSSL:
+````
+> sudo apt-get install openssl libssl-dev
+````
+
+Rebuild the client:
+````
+> cmake ./
+-- not define build type, set to release
+-- Found OpenSSL: /usr/lib/x86_64-linux-gnu/libcrypto.so (found version "1.1.1") 
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/finwedev/Source/socket.io-client-cpp
+> sudo make install
+````
+
+Rebuild the example:
+````
+> cd ~/Source/socket.io-client-cpp/examples/Console
+> cmake ./
+> sudo make install
+````
+
+After build, the directory now contains both 'libsioclient.a' and 'libsioclient_tls.a'. Next we need to ensure that the example app uses the one with TLS support:
+````
+> nano CMakeLists.txt
+````
+
+Replace ```target_link_libraries(sio_console_demo sioclient)``` with ```target_link_libraries(sio_console_demo sioclient_tls)```. Save with CTRL+O and exit with CTRL+X.
+
+Rebuild the example:
+````
+> cmake ./
+> sudo make clean
+> sudo make install
+````
+
+When you run the app, you should be able to connect Finwe's SignalingServer:
+````
+./sio_console_demo 
+[2021-06-17 18:49:19] [connect] Successful connection
+[2021-06-17 18:49:19] [connect] WebSocket Connection 192.168.1.115:443 v-2 "WebSocket++/0.8.2" /rtc/socket.io?EIO=4&transport=websocket&t=1623944959 101
+Type your nickname:
+````
+The SignalingServer's log should show this:
+````
+[15.49.19] Socket connected
+[15.49.19] SEND: 'init': Server --> Connected socket
+````
+
+#### Tips for debugging
+
+If you can't get the connection to work with Finwe' SignalingServer, first check with another Node.js server that TLS/SSL is working alright.
+
+Here is a minimal Node.js server with HTTPS support (index.js):
+````
+const https = require('https');
+const fs = require('fs');
+
+const options = {
+  key: fs.readFileSync('cert/server.key'),
+  cert: fs.readFileSync('cert/server.crt')
+};
+
+https.createServer(options, function (req, res) {
+  res.writeHead(200);
+  res.end("hello world\n");
+}).listen(443);
+````
+
+You can run it like this with helpful debugging info:
+```
+sudo DEBUG=* node index.js
+```
+
+> NOTE: Getting TLS/SSL to work can be tricky. Here are a few helpful tools/tricks to test against secure servers:
+>
+> Check SSL: ```openssl s_client -connect localhost:443```
+>
+> Download page: ```curl -k "https://localhost" --verbose```
+>
+> Open in browser: https://localhost:443
+>
+> When TLS/SSL is working properly, all of these should work without issues.
+
+Once this works OK, add Socket.IO support to the Node.js service; something like this (index.js):
+````
+const express = require('express');
+const path = require('path');
+
+var port = 443;
+
+// Self signed certificate
+const { PRIVATE_KEY, CERTIFICATE } = require('./cert/');
+const credentials = { key: PRIVATE_KEY, cert: CERTIFICATE };
+
+const app = express();
+const server = require('https').createServer(credentials, app);
+const io = require('socket.io')(server, { path: '/rtc' });
+// above: with /rtc path, you need to connect like this:
+// ./sio_console_demo https://192.168.1.115/rtc/socket.io
+
+// Start server
+server.listen(port, () => {
+  console.log(`Server listening at port ${port}`);
+});
+
+// Static website hosting
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Socket.IO events
+io.on("connection", function(socket){
+    console.log("new connection");
+  });
+````
+
+This will publish whatever is in /public dir (put simple index.html file there) and you can test e.g. with Firefox. However, this also starts a Socket.IO service, which you can connect to from the C++ client:
+````
+./sio_console_demo https://192.168.1.115:443/rtc/socket.io
+````
+
+Here we have modified the C++ client's console example (main.c) to use command line parameter; testing is much easier this way:
+````
+    if (argc != 2) {
+        h.connect("http://127.0.0.1:3000");
+    } else {
+        h.connect(args[1]);
+    }
+````
+
+### Integrating Socket.IO C++ client to WebRTC sendrecv example
+
 TODO
+
