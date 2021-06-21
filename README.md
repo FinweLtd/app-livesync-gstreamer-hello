@@ -1186,7 +1186,7 @@ static GOptionEntry entries[] = {
 static void
 connect_to_socketio_server_async(void)
 {
-    // The origianl webrtc-sendrecv example uses libsoup to connect to a
+    // The original webrtc-sendrecv example uses libsoup to connect to a
     // websocket server. With a LiveSYNC enabled 360 camera, we use Socket.IO
     // for signaling and thus replace libsoup with Socket.IO cpp client.
 
@@ -1316,6 +1316,15 @@ This means that we can now connect to Finwe's SignalingServer from a codebase fo
 
 > NOTE: instead of 192.168.1.115, you need to use the IP address of the machine running Finwe' SignalServer docker container.
 
+### Adding relevant signals (Socket.IO messages)
 
+From now on, we won't document every code addition in this README file - check commits and commit messages from the GitHub repository for step-by-step instructions, if necessary.
+
+Step1:
+- Added connection_listener class and cleanup_and_quit_loop function, so that we can observe connection state and cleanup when connection is closed
+- Added json-glib to CMakeLists.txt, so that we can use JSON for in/out signals
+- Added response_to_init(), so that we can properly respond to signaling server's 'init' request
+- Modified connect_to_socketio_server_async() to use connection listener and handle 'init' request
+- With these modifications, we successfully register to the signaling server, and close the connection after a timeout of inactivity
 
 

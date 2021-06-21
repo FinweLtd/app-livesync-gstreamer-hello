@@ -15,10 +15,14 @@ find_package(PkgConfig)
 # Use pkg-config for getting Gstreamer
 pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0)
 
+# Use pkg-config for getting json-glib
+pkg_check_modules(JSON-GLIB REQUIRED json-glib-1.0)
+
 # Include GStreamer header files directory
 include_directories(
         ${GLIB_INCLUDE_DIRS}
         ${GSTREAMER_INCLUDE_DIRS}
+        ${JSON-GLIB_INCLUDE_DIRS}
 )
 
 # Link GStreamer library directory
@@ -33,6 +37,7 @@ add_executable(${PROJECT_NAME} main.cpp)
 # Link socket.io cpp library with target executable
 target_link_libraries(${PROJECT_NAME} sioclient_tls)
 target_link_libraries(${PROJECT_NAME} pthread)
+target_link_libraries(${PROJECT_NAME} ${JSON-GLIB_LIBRARIES})
 
 # Link Gstreamer library with target executable
 target_link_libraries(
