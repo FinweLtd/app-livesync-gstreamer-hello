@@ -746,6 +746,12 @@ Let's get the source code for the C++ client, compile and install it:
 > sudo make install
 ````
 
+> IMPORTANT NOTE: Later on we found it is better to use older version from 2.x branch like this:
+>
+> git clone -b 2.x --recurse-submodules https://github.com/socketio/socket.io-client-cpp.git
+>
+> You should definitely consider using this; it will save time and work later...
+
 This produces the following files:
 ````
 /usr/local/include/sio_client.h
@@ -818,7 +824,7 @@ The first thing is to edit the example app and change the server URL.
 > nano main.cpp
 ````
 
-Find line with "http://localhost:3000" and change it to "https://192.168.1.115:443/rtc/socket.io" (use the IP of the machine that is running Finwe's SignalingServer). After recompiling, we get:
+Find line with "http://127.0.0.1:3000" and change it to "https://192.168.1.115:443/rtc/socket.io" (use the IP of the machine that is running Finwe's SignalingServer). After recompiling, we get:
 ````
 ./sio_console_demo 
 [2021-06-17 14:05:52] [connect] Successful connection
@@ -876,7 +882,7 @@ Rebuild the example:
 > sudo make install
 ````
 
-When you run the app, you should be able to connect Finwe's SignalingServer:
+When you run the app, you should be able to connect to Finwe's SignalingServer:
 ````
 ./sio_console_demo 
 [2021-06-17 18:49:19] [connect] Successful connection
@@ -895,7 +901,7 @@ If you can't get the connection to work with Finwe' SignalingServer, first check
 
 Here is a minimal Node.js server with HTTPS support (index.js):
 ````
-const https = require('https');
+const https = require('https')
 const fs = require('fs');
 
 const options = {
@@ -909,7 +915,9 @@ https.createServer(options, function (req, res) {
 }).listen(443);
 ````
 
-You can run it like this with helpful debugging info:
+Before you can run it, copy SignalingServer's server.key and server.crt under /cert directory.
+
+Then, you can run it like this with helpful debugging info:
 ```
 sudo DEBUG=* node index.js
 ```
@@ -1064,7 +1072,7 @@ Compile and run the program:
 
 We are now running basically the same thing as basic-tutorial-1.c where we started with Gstreamer.
 
-Next, use nano to replace CMakeLists.txt with a version that include Socket.IO cpp client:
+Next, use nano to replace CMakeLists.txt with a version that includes Socket.IO cpp client:
 ````
 cmake_minimum_required(VERSION 3.1.0 FATAL_ERROR)
 
@@ -1306,25 +1314,118 @@ Error: No active session
 Error: No active session
 ````
 
-Also, in te SignalingServer's console, you should see something like this:
+> NOTE: instead of 192.168.1.115, you need to use the IP address of the machine running Finwe' SignalServer docker container.
+
+Also, in the SignalingServer's console, you should see something like this:
 ````
 [11.24.19] Socket connected
 [11.24.19] SEND: 'init': Server --> Connected socket
 ````
 
-This means that we can now connect to Finwe's SignalingServer from a codebase for Gstreamer WebRTC streaming. The next task is to add actual signaling messages and copy more code from the webrtc-sendrcv.c example to actually open WebRTC streams.
-
-> NOTE: instead of 192.168.1.115, you need to use the IP address of the machine running Finwe' SignalServer docker container.
+This means that we can now connect to Finwe's SignalingServer from a C/C++ codebase for Gstreamer WebRTC streaming pipeline. The next task is to add actual signaling messages and copy more code from the webrtc-sendrcv.c example to actually open WebRTC streams.
 
 ### Adding relevant signals (Socket.IO messages)
 
 From now on, we won't document every code addition in this README file - check commits and commit messages from the GitHub repository for step-by-step instructions, if necessary.
 
-Step1:
+Step 1: Connection handling and registering to signal server
 - Added connection_listener class and cleanup_and_quit_loop function, so that we can observe connection state and cleanup when connection is closed
 - Added json-glib to CMakeLists.txt, so that we can use JSON for in/out signals
 - Added response_to_init(), so that we can properly respond to signaling server's 'init' request
 - Modified connect_to_socketio_server_async() to use connection listener and handle 'init' request
 - With these modifications, we successfully register to the signaling server, and close the connection after a timeout of inactivity
 
+Step 2: Fix the ping-pong
+- Currently, the connection will auto close after 30 seconds, which we of course don't want. Apparently, this is not just a missing configuration somewhere, but a version glitch between Socket.IO 2.x and 3.0: https://github.com/socketio/socket.io/issues/3698
+- Finwe's SignalingServer is based on Socket.IO 2.3, but Socket.IO C++ client's master repo now contains 3.0 client and they say that is *not* compatible with 2.x (README.md in the repo).
+- The branch 2.x should contain a compatible version, which we tried, but it couldn't connect with anything using TLS (seems that current status is broken in 2.x branch?).
+- Nevertheless, there aren't much code changes between 2.0 release and 3.0 release, especially those that are related to ping-pong keepalive system. According to documentation here and there, they have reversed ping-pong direction somewhere between 2.x and 3.0. As a result, Finwe's SignalServer assumes that ping events (frame number '2') are sent periodically from the client, which can be confirmed working fine like that from our web player (Chrome's debug log). However, the C++ client does not send them as it now excepts *the server* to send them, hence it does not receive 'pong' replies either (frame number '3'), and decides to close the connection after 30 seconds... doh.
+- To fix this, we can simply revert a few recent changes in the C++ client's code to make it send 'ping' events again and to handle 'pong' events that come from the SignalServer as a response:
+````
+> cd ~/Source/socket.io/socket.io-client-cpp/src/internal
+> nano sio_packet.cpp
+````
+In client_impl::ping(), add this just above "if(!m_ping_timeout_timer)":
+````
+if(m_ping_timer)
+        {
+            asio::error_code e_code;
+            m_ping_timer->expires_from_now(milliseconds(m_ping_interval), e_code);
+            m_ping_timer->async_wait(std::bind(&client_impl::ping,this, std::placeholders::_1));
+        }
+````
+
+In client_impl::on_handshake(), add this just above "return;":
+````
+m_ping_timer.reset(new asio::steady_timer(m_client.get_io_service()));
+asio::error_code ec;
+m_ping_timer->expires_from_now(milliseconds(m_ping_interval), ec);
+if(ec)LOG("ec:"<<ec.message()<<endl){};
+m_ping_timer->async_wait(std::bind(&client_impl::ping,this, std::placeholders::_1));
+LOG("On handshake,sid:"<<m_sid<<",ping interval:"<<m_ping_interval<<",ping timeout"<<m_ping_timeout<<endl);
+````
+
+In client_impl::on_ping():
+- change method name to client_impl::on_pong()
+- remove this from the beginning of the method:
+````
+ packet p(packet::frame_pong);
+        m_packet_mgr.encode(p, [&](bool /*isBin*/,shared_ptr<const string> payload)
+        {
+            this->m_client.send(this->m_con, *payload, frame::opcode::text);
+        });
+````
+
+In client_impl::on_decode(), replace
+````
+case packet::frame_ping:
+  this->on_ping();
+````
+with
+````
+case packet::frame_pong:
+  this->on_pong();
+````
+
+In client_impl::clear_timers(), add this to the end of the method:
+````
+if(m_ping_timer)
+{
+    m_ping_timer->cancel(ec);
+    m_ping_timer.reset();
+}
+````
+
+Save (CTRL+O) and exit (CTRL+X).
+
+Then, edit also the header file:
+````
+> nano sio_packet.h
+````
+
+Find "void on_ping();" and replace it with "void on_pong();".
+
+Above "std::unique_ptr<asio::steady_timer> m_ping_timeout_timer;" add this:
+````
+std::unique_ptr<asio::steady_timer> m_ping_timer;
+````
+Save (CTRL+O) and exit (CTRL+X).
+
+These changes were picked from here:
+https://github.com/socketio/socket.io-client-cpp/compare/2.0.0...3.0.0
+
+Now, let's recompile and test again:
+```
+> cd ~/Source/livesync-gstreamer/src
+> cmake ./
+> sudo make clean
+> sudo make install
+> ./livesync_gstreamer
+```
+
+And, lo and behold, the socket isn't closed anymore and from the SignalServer's end, we can see a ping event ("2") coming from the C++ client according to ping interval defined by the server, and a response ("3") being sent back to it.
+
+
+Step 3: Bind to events and handle them
+- 
 

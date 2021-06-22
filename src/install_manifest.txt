@@ -1,0 +1,5 @@
+/usr/local/include/sio_client.h
+/usr/local/include/sio_message.h
+/usr/local/include/sio_socket.h
+/usr/local/lib/libsioclient.a
+/usr/local/lib/libsioclient_tls.a

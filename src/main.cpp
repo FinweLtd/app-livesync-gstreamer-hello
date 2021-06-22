@@ -35,7 +35,8 @@
 enum AppState
 {
     APP_STATE_UNKNOWN = 0,
-    APP_STATE_ERROR = 1, /* generic error */
+    APP_STATE_INITIALIZING = 1,
+    APP_STATE_ERROR = 2, /* generic error */
     SERVER_CONNECTING = 1000,
     SERVER_CONNECTION_ERROR,
     SERVER_CONNECTED, /* Ready to register */
@@ -77,39 +78,43 @@ std::mutex _lock;
 std::condition_variable_any _cond;
 bool connect_finish = false;
 sio::socket::ptr current_socket;
-static sio::client h;
+static sio::client client;
 
+/**
+ * Handle cleanup and quit running the app.
+ */
 static gboolean cleanup_and_quit_loop(const gchar *msg, enum AppState state)
 {
+    // Notify user and set app final state.
     if (msg)
-        g_printerr("%s\n", msg);
+        g_printerr("Quitting the app, reason: %s\n", msg);
     if (state > 0)
         app_state = state;
 
-    h.close();
-    h.clear_con_listeners();
+    // Close connection to the signal server and remove connection listener.
+    client.close();
+    client.clear_con_listeners();
 
+    // Stop the main loop.
     if (loop)
     {
         g_main_loop_quit(loop);
         loop = nullptr;
     }
 
-    /* To allow usage as a GSourceFunc */
+    // To allow usage as a GSourceFunc.
     return G_SOURCE_REMOVE;
 }
 
 /**
- * Listener for connection events to the signaling server.
+ * Listener for connection events related to the signaling server.
  */
 class connection_listener
 {
     sio::client &handler;
 
 public:
-    connection_listener(sio::client &h) : handler(h)
-    {
-    }
+    connection_listener(sio::client &h) : handler(client) {}
 
     void on_connected()
     {
@@ -118,13 +123,14 @@ public:
         connect_finish = true;
         _lock.unlock();
         app_state = SERVER_CONNECTED;
-        g_print("Signaling connection opened\n");
+        g_print("Successfully connected to SignalingServer\n");
     }
     void on_close(sio::client::close_reason const &reason)
     {
-        g_print("Signaling connection closed, reason: %d\n", reason);
-        //exit(0); //TODO error handling/reconnect logic, if needed
-        // reason == 0: normal, reason == 1: drop
+        g_print("\nConnection to SignalingServer closed, reason: %d\n", reason);
+        // reason: 0=normal, 1=drop
+
+        //TODO Error handling/reconnect logic if needed (or use auto reconnect).
 
         app_state = SERVER_CLOSED;
         cleanup_and_quit_loop("Server connection closed", APP_STATE_UNKNOWN);
@@ -132,61 +138,177 @@ public:
 
     void on_fail()
     {
-        g_printerr("Signaling connection failed\n");
-        //exit(0); //TODO error handling/reconnect logic, if needed
+        g_printerr("Connection to SignalingServer failed (is it running?)\n");
 
         app_state = SERVER_CONNECTION_ERROR;
-        cleanup_and_quit_loop("Server connection closed", APP_STATE_ERROR);
+        cleanup_and_quit_loop("Server connection failed", APP_STATE_ERROR);
     }
 };
 
+/**
+ * Bind to known signals and handle them.
+ */
+void bind_events()
+{
+    current_socket->on("ready", sio::socket::event_listener_aux(
+                                    [&](string const &name, sio::message::ptr const &data,
+                                        bool isAck, sio::message::list &ack_resp)
+                                    {
+                                        _lock.lock();
+                                        g_print("RECV: 'ready' -> ");
+                                        _lock.unlock();
+                                    }));
+
+    current_socket->on("video-offer", sio::socket::event_listener_aux(
+                                          [&](string const &name, sio::message::ptr const &data,
+                                              bool isAck, sio::message::list &ack_resp)
+                                          {
+                                              _lock.lock();
+                                              g_print("RECV: 'video-offer' -> ");
+                                              _lock.unlock();
+                                          }));
+
+    current_socket->on("video-answer", sio::socket::event_listener_aux(
+                                           [&](string const &name, sio::message::ptr const &data,
+                                               bool isAck, sio::message::list &ack_resp)
+                                           {
+                                               _lock.lock();
+                                               g_print("RECV: 'video-answer' -> ");
+                                               _lock.unlock();
+                                           }));
+
+    current_socket->on("hang-up", sio::socket::event_listener_aux(
+                                      [&](string const &name, sio::message::ptr const &data,
+                                          bool isAck, sio::message::list &ack_resp)
+                                      {
+                                          _lock.lock();
+                                          g_print("RECV: 'hang-up' -> ");
+                                          _lock.unlock();
+                                      }));
+
+    current_socket->on("device-authenticated", sio::socket::event_listener_aux(
+                                                   [&](string const &name, sio::message::ptr const &data,
+                                                       bool isAck, sio::message::list &ack_resp)
+                                                   {
+                                                       _lock.lock();
+                                                       g_print("RECV: 'device-authenticated' -> ");
+                                                       _lock.unlock();
+                                                   }));
+
+    current_socket->on("device-ready", sio::socket::event_listener_aux(
+                                           [&](string const &name, sio::message::ptr const &data,
+                                               bool isAck, sio::message::list &ack_resp)
+                                           {
+                                               _lock.lock();
+                                               g_print("RECV: 'device-ready' -> ");
+                                               _lock.unlock();
+                                           }));
+
+    current_socket->on("device-disconnected", sio::socket::event_listener_aux(
+                                                  [&](string const &name, sio::message::ptr const &data,
+                                                      bool isAck, sio::message::list &ack_resp)
+                                                  {
+                                                      _lock.lock();
+                                                      g_print("RECV: 'device-disconnected' -> ");
+                                                      _lock.unlock();
+                                                  }));
+
+    current_socket->on("message", sio::socket::event_listener_aux(
+                                      [&](string const &name, sio::message::ptr const &data,
+                                          bool isAck, sio::message::list &ack_resp)
+                                      {
+                                          _lock.lock();
+                                          g_print("RECV: 'message' -> ");
+                                          _lock.unlock();
+                                      }));
+
+    current_socket->on("ping", sio::socket::event_listener_aux(
+                                   [&](string const &name, sio::message::ptr const &data,
+                                       bool isAck, sio::message::list &ack_resp)
+                                   {
+                                       _lock.lock();
+                                       g_print("RECV: 'ping' -> ");
+                                       _lock.unlock();
+                                   }));
+
+    current_socket->on("connect_error", sio::socket::event_listener_aux(
+                                   [&](string const &name, sio::message::ptr const &data,
+                                       bool isAck, sio::message::list &ack_resp)
+                                   {
+                                       _lock.lock();
+                                       g_print("RECV: 'connect_error' -> ");
+                                       _lock.unlock();
+                                   }));
+
+}
+
+/**
+ * Send a response to SignalServer's 'init' message (register us as a receiver).
+ */
 static void response_to_init(sio::socket::ptr current_socket)
 {
     // emit: {'sub':'Player-Gstreamer', 'role': 'receiver'}
+    // sub: Any name that we want to use from ourself, here 'Player-Gstreamer'.
+    // role: We will be a 'receiver', the 360 camera will be a 'sender'.
+
+    // The response must be sent as a JSON object - NOT just a string that
+    // looks like JSON. Hence, we need to use Socket.IO's object_message type:
     sio::message::ptr jsonObj = sio::object_message::create();
     jsonObj->get_map()["sub"] = sio::string_message::create("Player-Gstreamer");
     jsonObj->get_map()["role"] = sio::string_message::create("receiver");
-    g_print("SEND: 'init', %s\n", "{'sub':'Player-Gstreamer', 'role': 'receiver'}");
-    current_socket->emit("init", jsonObj, [&](sio::message::list const &msg)
-                         {
-                             g_print("ACK: ");
-                             if (msg.size() > 0)
-                             {
-                                 sio::message::ptr ack = msg[0]; // assume 1 msg
-                                 switch (ack->get_flag())
-                                 {
-                                 case sio::message::flag_boolean:
-                                 {
-                                     bool initialized = ack->get_bool();
-                                     if (initialized)
-                                     {
-                                         g_print("initialization OK\n");
-                                     }
-                                     else
-                                     {
-                                         g_print("initialization FAILED\n");
-                                     }
-                                     break;
-                                 }
-                                 case sio::message::flag_integer:
-                                 case sio::message::flag_double:
-                                 case sio::message::flag_string:
-                                 case sio::message::flag_binary:
-                                 case sio::message::flag_array:
-                                 case sio::message::flag_object:
-                                 case sio::message::flag_null:
-                                 default:
-                                 {
-                                     g_printerr("Unexpected response type from signaling server: %d", ack->get_flag());
-                                     break;
-                                 }
-                                 }
-                             }
-                             else
-                             {
-                                 g_printerr("Unexpected response type from signaling server: empty ack\n");
-                             }
-                         });
+    g_print("SEND: 'init', {'sub':'Player-Gstreamer', 'role': 'receiver'} \n");
+    current_socket->emit(
+        "init", jsonObj, [&](sio::message::list const &msg)
+        {
+            // The SignalServer will response with an ACK and a boolean status.
+            g_print("ACK: 'init'  -> ");
+            if (msg.size() > 0)
+            {
+                sio::message::ptr ack = msg[0]; // There should be only one msg.
+                switch (ack->get_flag())
+                {
+                case sio::message::flag_boolean:
+                {
+                    // ACK to 'init' message should contain a boolean response.
+                    bool initialized = ack->get_bool();
+                    if (initialized)
+                    {
+                        g_print("registration OK\n");
+                        app_state = SERVER_REGISTERED;
+
+                        bind_events();
+                    }
+                    else
+                    {
+                        g_print("registration FAILED\n");
+                        app_state = SERVER_REGISTRATION_ERROR;
+
+                        cleanup_and_quit_loop("Server registration failed", APP_STATE_ERROR);
+                    }
+                    break;
+                }
+                /*
+                case sio::message::flag_integer:
+                case sio::message::flag_double:
+                case sio::message::flag_string:
+                case sio::message::flag_binary:
+                case sio::message::flag_array:
+                case sio::message::flag_object:
+                case sio::message::flag_null:
+                */
+                default:
+                {
+                    g_printerr("Unexpected response type from signaling server: %d",
+                               ack->get_flag());
+                    break;
+                }
+                }
+            }
+            else
+            {
+                g_printerr("Unexpected response type from signaling server: empty ack\n");
+            }
+        });
 }
 
 /*
@@ -194,23 +316,26 @@ static void response_to_init(sio::socket::ptr current_socket)
  */
 static void connect_to_socketio_server_async(void)
 {
-    // The original webrtc-sendrecv example uses libsoup to connect to a
+    // The original webrtc-sendrecv example uses libsoup to connect to their
     // websocket server. With a LiveSYNC enabled 360 camera, we use Socket.IO
-    // for signaling and thus replace libsoup with Socket.IO cpp client.
-
-    // Setup connection listener.
-    connection_listener l(h);
-    h.set_open_listener(std::bind(&connection_listener::on_connected, &l));
-    h.set_close_listener(std::bind(&connection_listener::on_close, &l, std::placeholders::_1));
-    h.set_fail_listener(std::bind(&connection_listener::on_fail, &l));
-
-    g_print("Connecting to SignalingServer %s\n", server_url);
-    h.set_logs_verbose();
-    h.connect(server_url);
+    // for signaling, and thus replace libsoup with Socket.IO cpp client.
+    // This function completely replaces the one in the original example.
 
     app_state = SERVER_CONNECTING;
 
-    // Wait until connected / connection attempt failed.
+    // First, setup connection listener for Socket.IO client.
+    connection_listener l(client);
+    client.set_open_listener(std::bind(&connection_listener::on_connected, &l));
+    client.set_close_listener(std::bind(&connection_listener::on_close, &l,
+                                        std::placeholders::_1));
+    client.set_fail_listener(std::bind(&connection_listener::on_fail, &l));
+
+    // Second, try to connect to the given server URL.
+    g_print("Connecting to SignalingServer %s ...\n", server_url);
+    //client.set_logs_verbose();
+    client.connect(server_url);
+
+    // ... wait until connected or connection attempt failed ...
     _lock.lock();
     if (!connect_finish)
     {
@@ -218,40 +343,43 @@ static void connect_to_socketio_server_async(void)
     }
     _lock.unlock();
 
-    // Open socket.
-    current_socket = h.socket();
+    // Open socket for sending/receiving messages.
+    current_socket = client.socket();
 
-    // We use the default namespace '/'.
+    // The SignalServer uses the default namespace '/'.
     g_print("Namespace: %s\n", current_socket->get_namespace().c_str());
 
-    // Upon connect signaling server sends 'init' request and we must respond.
-    current_socket->on("init", sio::socket::event_listener_aux([&](
-                                                                   string const &name, sio::message::ptr const &data, bool isAck, sio::message::list &ack_resp)
-                                                               {
-                                                                   _lock.lock();
+    // Upon connect, the SignalServer sends 'init' request and we must respond.
+    // (VS Code auto-format does a bad job formatting here... sorry!)
+    current_socket->on("init", sio::socket::event_listener_aux(
+                                   [&](string const &name, sio::message::ptr const &data,
+                                       bool isAck, sio::message::list &ack_resp)
+                                   {
+                                       _lock.lock();
 
-                                                                   bool response = false;
-                                                                   if (app_state == SERVER_CONNECTED)
-                                                                   {
-                                                                       g_print("RECV: INIT -> registering...\n");
-                                                                       app_state = SERVER_REGISTERING;
-                                                                       response = true;
-                                                                   }
+                                       bool response = false;
+                                       if (app_state == SERVER_CONNECTED)
+                                       {
+                                           g_print("RECV: 'init' -> Attempt to register...\n");
+                                           app_state = SERVER_REGISTERING;
+                                           response = true;
+                                       }
 
-                                                                   _cond.notify_all();
-                                                                   _lock.unlock();
+                                       _cond.notify_all();
+                                       _lock.unlock();
 
-                                                                   current_socket->off("init");
+                                       // No need to listen to "init" anymore.
+                                       current_socket->off("init");
 
-                                                                   if (response)
-                                                                   {
-                                                                       response_to_init(current_socket);
-                                                                   }
-                                                               }));
+                                       if (response)
+                                       {
+                                           response_to_init(current_socket);
+                                       }
+                                   }));
 }
 
 /**
- * Check that required Gstreamer plugins are installed.
+ * Check that the required Gstreamer plugins are installed and available.
  */
 static gboolean check_plugins(void)
 {
@@ -290,27 +418,26 @@ static gboolean check_plugins(void)
 }
 
 /**
- * main function - the program start from here.
+ * Main function - the program starts from here.
  */
 int main(int argc, char *argv[])
 {
     g_print("*** LiveSYNC Gstreamer example ***\n");
+    app_state = APP_STATE_INITIALIZING;
 
+    // Parse command-line parameters.
     GOptionContext *context;
     GError *error = nullptr;
-
-    context = g_option_context_new("- LiveSYNC GStreamer example");
+    context = g_option_context_new("*** LiveSYNC GStreamer example ***");
     g_option_context_add_main_entries(context, entries, NULL);
     g_option_context_add_group(context, gst_init_get_option_group());
     if (!g_option_context_parse(context, &argc, &argv, &error))
     {
-        g_printerr("Error initializing: %s\n", error->message);
+        g_printerr("Error in initializing: %s\n", error->message);
         return -1;
     }
 
-    if (!check_plugins())
-        return -1;
-
+    // Check required command-line configuration parameters.
     g_print("Checking required parameters...");
     if (!server_url)
     {
@@ -324,8 +451,12 @@ int main(int argc, char *argv[])
         g_printerr(" OK\n");
     }
 
-    // Disable ssl when running a localhost server, because
-    // it's probably a test server with a self-signed certificate
+    // Check required Gstreamer plugins.
+    if (!check_plugins())
+        return -1;
+
+    // Disable ssl when running on a localhost server, because
+    // it's probably a test server with a self-signed certificate.
     {
         GstUri *uri = gst_uri_from_string(server_url);
         if (g_strcmp0("localhost", gst_uri_get_host(uri)) == 0 ||
@@ -334,19 +465,30 @@ int main(int argc, char *argv[])
         gst_uri_unref(uri);
     }
 
+    // Create the main loop, which keeps the app running.
     loop = g_main_loop_new(nullptr, FALSE);
 
+    // Begin operation by attempting to connect to the signal server.
     connect_to_socketio_server_async();
 
+    // Start the main loop and run it until we quit for some reason.
     g_main_loop_run(loop);
-    g_main_loop_unref(loop);
 
+    // Main loop has stopped, cleanup.
+    g_main_loop_unref(loop);
+    g_print("Stopping Gstreamer pipeline...");
     if (pipe1)
     {
         gst_element_set_state(GST_ELEMENT(pipe1), GST_STATE_NULL);
-        g_print("Pipeline stopped\n");
         gst_object_unref(pipe1);
+        g_printerr(" OK\n");
     }
+    else
+    {
+        g_printerr(" Not found\n");
+    }
+
+    g_print("All done.\n");
 
     return 0;
 }
