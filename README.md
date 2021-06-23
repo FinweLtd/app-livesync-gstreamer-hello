@@ -746,12 +746,6 @@ Let's get the source code for the C++ client, compile and install it:
 > sudo make install
 ````
 
-> IMPORTANT NOTE: Later on we found it is better to use older version from 2.x branch like this:
->
-> git clone -b 2.x --recurse-submodules https://github.com/socketio/socket.io-client-cpp.git
->
-> You should definitely consider using this; it will save time and work later...
-
 This produces the following files:
 ````
 /usr/local/include/sio_client.h

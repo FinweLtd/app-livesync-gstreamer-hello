@@ -14,6 +14,8 @@ find_package(PkgConfig)
 
 # Use pkg-config for getting Gstreamer
 pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0)
+pkg_check_modules(GSTREAMER REQUIRED gstreamer-sdp-1.0)
+pkg_check_modules(GSTREAMER REQUIRED gstreamer-webrtc-1.0)
 
 # Use pkg-config for getting json-glib
 pkg_check_modules(JSON-GLIB REQUIRED json-glib-1.0)
