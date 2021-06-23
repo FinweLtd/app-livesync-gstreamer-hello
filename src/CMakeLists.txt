@@ -36,8 +36,9 @@ link_directories(
 # Build target executable
 add_executable(${PROJECT_NAME} main.cpp)
 
-# Link socket.io cpp library with target executable
+# Link libraries with target executable
 target_link_libraries(${PROJECT_NAME} sioclient_tls)
+target_link_libraries(${PROJECT_NAME} gstsdp-1.0)
 target_link_libraries(${PROJECT_NAME} pthread)
 target_link_libraries(${PROJECT_NAME} ${JSON-GLIB_LIBRARIES})
 

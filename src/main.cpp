@@ -31,6 +31,8 @@
 #define HIGHLIGHT(__O__) std::cout << "\e[1;31m" << __O__ << "\e[0m" << std::endl
 
 #include <string.h>
+#include <cstring>
+#include <regex>
 
 enum AppState
 {
@@ -59,7 +61,7 @@ static GstElement *pipe1, *webrtc1;
 static GObject *send_channel, *receive_channel;
 
 static enum AppState app_state = APP_STATE_UNKNOWN;
-static const gchar *own_id = "LiveSYNC-Gstreamer";
+static const gchar *own_id = "LiveSYNC Gstreamer";
 static const gchar *peer_id = nullptr;
 static const gchar *server_url = nullptr;
 static gboolean disable_ssl = FALSE;
@@ -85,6 +87,7 @@ static sio::client client;
 #define STUN_SERVER " stun-server=stun://stun.l.google.com:19302 "
 #define RTP_CAPS_OPUS "application/x-rtp,media=audio,encoding-name=OPUS,payload="
 #define RTP_CAPS_VP8 "application/x-rtp,media=video,encoding-name=VP8,payload="
+#define RTP_PAYLOAD_TYPE "96"
 
 /**
  * Handle cleanup and quit running the app.
@@ -109,7 +112,8 @@ static gboolean cleanup_and_quit_loop(const gchar *msg, enum AppState state)
     }
 
     // Cleanup.
-    if (peer_id) {
+    if (peer_id)
+    {
         delete peer_id;
         peer_id = nullptr;
     }
@@ -314,13 +318,80 @@ static void send_ice_candidate_message(GstElement *webrtc G_GNUC_UNUSED,
     json_object_set_string_member(msg, "source", own_id);
     json_object_set_string_member(msg, "type", "new-ice-candidate");
     json_object_set_object_member(msg, "candidate", ice);
-    
+
     text = get_string_from_json_object(msg);
     json_object_unref(msg);
 
     g_print("SEND: 'new-ice-candidate', %s\n", text);
     current_socket->emit(
         "new-ice-candidate", (std::string)text, [&](sio::message::list const &msg)
+        {
+            // Prevent flooding the log.
+            //g_print("ACK:  'new-ice-candidate', \n");
+        });
+
+    g_free(text);
+}
+
+/**
+ * Send video offer to peer (camera).
+ */
+static void send_sdp_to_peer(GstWebRTCSessionDescription *desc)
+{
+    gchar *text;
+    JsonObject *msg, *sdp;
+
+    if (app_state < PEER_CALL_NEGOTIATING)
+    {
+        cleanup_and_quit_loop("Can't send SDP to peer, not in a call",
+                              APP_STATE_ERROR);
+        return;
+    }
+
+    text = gst_sdp_message_as_text(desc->sdp);
+
+    // Miserable hack to add bundle specifier (why it isn't there?)
+    //string tmp = string(gst_sdp_message_as_text(desc->sdp));
+    //string source = "t=0 0\r\n";
+    //string target = "a=group:BUNDLE 0 1\r\n";
+    //tmp.insert(tmp.find(source) + source.size(), target);
+
+    //string source2 = "a=sendrecv";
+    //string target2 = "a=mid:0\r\n";
+    //tmp.insert(tmp.find(source2), target2);
+
+    //text = new char[tmp.size() + 1];
+    //std::strcpy(text, tmp.c_str());
+
+    sdp = json_object_new();
+    if (desc->type == GST_WEBRTC_SDP_TYPE_OFFER)
+    {
+        g_print("Sending offer:\n%s\n", text);
+        json_object_set_string_member(sdp, "type", "offer");
+    }
+    else if (desc->type == GST_WEBRTC_SDP_TYPE_ANSWER)
+    {
+        g_print("Sending answer:\n%s\n", text);
+        json_object_set_string_member(sdp, "type", "answer");
+    }
+    else
+    {
+        g_assert_not_reached();
+    }
+
+    json_object_set_string_member(sdp, "sdp", text);
+    g_free(text);
+
+    msg = json_object_new();
+    json_object_set_string_member(msg, "target", peer_id);
+    json_object_set_object_member(msg, "sdp", sdp);
+
+    text = get_string_from_json_object(msg);
+    json_object_unref(msg);
+
+    g_print("SEND: 'video-offer', %s\n", text);
+    current_socket->emit(
+        "video-offer", (std::string)text, [&](sio::message::list const &msg)
         {
             // Prevent flooding the log.
             //g_print("ACK:  'new-ice-candidate', \n");
@@ -351,7 +422,7 @@ static void on_offer_created(GstPromise *promise, gpointer user_data)
     gst_promise_unref(promise);
 
     // Send offer to peer (camera).
-    //send_sdp_to_peer(offer); //TODO
+    send_sdp_to_peer(offer);
     gst_webrtc_session_description_free(offer);
 }
 
@@ -470,14 +541,31 @@ static gboolean start_pipeline(void)
 {
     GstStateChangeReturn ret;
     GError *error = NULL;
+    GstCaps *video_caps;
+    GstWebRTCRTPTransceiver *trans = NULL;
 
     pipe1 =
-        gst_parse_launch("webrtcbin bundle-policy=max-bundle name=sendrecv " STUN_SERVER
-                         "videotestsrc is-live=true pattern=ball ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay ! "
-                         "queue ! " RTP_CAPS_VP8 "96 ! sendrecv. "
+        /*
+        gst_parse_launch("webrtcbin name=sendrecv stun-server=stun://" STUN_SERVER " "
+                         //" ! rtpvp8depay ! vp8dec ! videoconvert ! queue ! fakevideosink "
+                         //"videotestsrc is-live=true pattern=ball ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay ! "
+                         //"queue ! " RTP_CAPS_VP8 "96 ! sendrecv. "
+                         , &error);
+    */
+        /*
+        gst_parse_launch("webrtcbin name=sendrecv stun-server=stun://" STUN_SERVER " "
                          "audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! "
                          "queue ! " RTP_CAPS_OPUS "97 ! sendrecv. ",
                          &error);
+    */
+
+        // bundle-policy=max-bundle
+        gst_parse_launch("webrtcbin name=sendrecv bundle-policy=max-compat " STUN_SERVER
+                         "videotestsrc is-live=true pattern=ball ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay ! "
+                         "queue ! " RTP_CAPS_VP8 "96 ! sendrecv. "
+      //                   "audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! "
+      //                   "queue ! " RTP_CAPS_OPUS "97 ! sendrecv. "
+                         ,&error);
 
     if (error)
     {
@@ -521,6 +609,15 @@ static gboolean start_pipeline(void)
                      NULL);
     */
 
+    // From sendonly/webrtc-recvonly-h264.c:
+    // Create a 2nd transceiver for the receive only video stream.
+    /*
+    video_caps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=" RTP_PAYLOAD_TYPE ",clock-rate=90000,packetization-mode=(string)1, profile-level-id=(string)42c016");
+    g_signal_emit_by_name(webrtc1, "add-transceiver", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, video_caps, &trans);
+    gst_caps_unref(video_caps);
+    gst_object_unref(trans);
+    */
+
     /* Incoming streams will be exposed via this signal */
     g_signal_connect(webrtc1, "pad-added", G_CALLBACK(on_incoming_stream),
                      pipe1);
@@ -528,7 +625,7 @@ static gboolean start_pipeline(void)
     /* Lifetime is the same as the pipeline itself */
     gst_object_unref(webrtc1);
 
-    g_print("Starting pipeline\n");
+    g_print("Starting Gstreamer pipeline\n");
     ret = gst_element_set_state(GST_ELEMENT(pipe1), GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE)
         goto err;
@@ -546,7 +643,7 @@ err:
 /**
  * Try to call to the camera device.
  */
-static gboolean setup_call(const gchar* callTarget)
+static gboolean setup_call(const gchar *callTarget)
 {
     g_print("Trying to call to %s ...\n", callTarget);
 
@@ -652,7 +749,9 @@ void bind_events()
                                                            cleanup_and_quit_loop("ERROR: Failed to setup call!",
                                                                                  PEER_CALL_ERROR);
                                                        }
-                                                   } else {
+                                                   }
+                                                   else
+                                                   {
                                                        g_print("Camera is ready but it is not free; not calling!");
                                                    }
                                                }
