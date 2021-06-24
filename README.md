@@ -1322,14 +1322,14 @@ This means that we can now connect to Finwe's SignalingServer from a C/C++ codeb
 
 From now on, we won't document every code addition in this README file - check commits and commit messages from the GitHub repository for step-by-step instructions, if necessary.
 
-Step 1: Connection handling and registering to signal server
+#### Step 1: Connection handling and registering to signal server
 - Added connection_listener class and cleanup_and_quit_loop function, so that we can observe connection state and cleanup when connection is closed
 - Added json-glib to CMakeLists.txt, so that we can use JSON for in/out signals
 - Added response_to_init(), so that we can properly respond to signaling server's 'init' request
 - Modified connect_to_socketio_server_async() to use connection listener and handle 'init' request
 - With these modifications, we successfully register to the signaling server, and close the connection after a timeout of inactivity
 
-Step 2: Fix the ping-pong
+#### Step 2: Fix the ping-pong
 - Currently, the connection will auto close after 30 seconds, which we of course don't want. Apparently, this is not just a missing configuration somewhere, but a version glitch between Socket.IO 2.x and 3.0: https://github.com/socketio/socket.io/issues/3698
 - Finwe's SignalingServer is based on Socket.IO 2.3, but Socket.IO C++ client's master repo now contains 3.0 client and they say that is *not* compatible with 2.x (README.md in the repo).
 - The branch 2.x should contain a compatible version, which we tried, but it couldn't connect with anything using TLS (seems that current status is broken in 2.x branch?).
@@ -1419,7 +1419,9 @@ Now, let's recompile and test again:
 
 And, lo and behold, the socket isn't closed anymore and from the SignalServer's end, we can see a ping event ("2") coming from the C++ client according to ping interval defined by the server, and a response ("3") being sent back to it.
 
-
-Step 3: Bind to events and handle them
-- 
+#### Step 3: Bind to events and handle them to make a video call
+- Added bind_events() and handling for all used messages via SignalServer
+- This started a sequence of actions where more and more functions were copied from webrtc-sendrecv to initiate and build a video call: ICE gathering and exchange from C++ client to camera, building and starting a Gstreamer pipeline, creating and transmitting a video offer from C++ client to camera, receiving and processing a video answer from camera, receiving and adding ICE candidates from camera, and opening video stream from camera
+- A compatibility issue between Google WebRTC library (used in 360 camera app) and C/C++ Gstremer WebRTC library forced to make a tiny configuration change to the camera app as well (must be updated to the Labpano camera as an .apk install): bundle policy was changed in camera from max-bundle to balanced, as C/C++ client did not include bundle group to its SDP description, no matter how we configured it.
+- This is the 1st version that successfully playes 360 video stream in a window on Ubuntu VM
 

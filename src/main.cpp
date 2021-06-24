@@ -199,7 +199,7 @@ static void handle_media_stream(GstPad *pad, GstElement *pipe,
     GstElement *q, *conv, *resample, *sink;
     GstPadLinkReturn ret;
 
-    g_print("Trying to handle stream with %s ! %s", convert_name, sink_name);
+    g_print("Trying to handle stream with %s ! %s\n", convert_name, sink_name);
 
     q = gst_element_factory_make("queue", NULL);
     g_assert_nonnull(q);
@@ -350,6 +350,7 @@ static void send_sdp_to_peer(GstWebRTCSessionDescription *desc)
 
     text = gst_sdp_message_as_text(desc->sdp);
 
+    // Commented out; this was fixed from the camera's end (bundle policy).
     // Miserable hack to add bundle specifier (why it isn't there?)
     //string tmp = string(gst_sdp_message_as_text(desc->sdp));
     //string source = "t=0 0\r\n";
@@ -394,7 +395,7 @@ static void send_sdp_to_peer(GstWebRTCSessionDescription *desc)
         "video-offer", (std::string)text, [&](sio::message::list const &msg)
         {
             // Prevent flooding the log.
-            //g_print("ACK:  'new-ice-candidate', \n");
+            //g_print("ACK:  'video-offer', \n");
         });
 
     g_free(text);
@@ -563,9 +564,10 @@ static gboolean start_pipeline(void)
         gst_parse_launch("webrtcbin name=sendrecv bundle-policy=max-compat " STUN_SERVER
                          "videotestsrc is-live=true pattern=ball ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay ! "
                          "queue ! " RTP_CAPS_VP8 "96 ! sendrecv. "
-      //                   "audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! "
-      //                   "queue ! " RTP_CAPS_OPUS "97 ! sendrecv. "
-                         ,&error);
+                         //                   "audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! "
+                         //                   "queue ! " RTP_CAPS_OPUS "97 ! sendrecv. "
+                         ,
+                         &error);
 
     if (error)
     {
@@ -637,6 +639,142 @@ err:
         g_clear_object(&pipe1);
     if (webrtc1)
         webrtc1 = NULL;
+    return FALSE;
+}
+
+/**
+ * Check camera's incoming ICE candidate, and add or reject it.
+ */
+static gboolean add_ice_candidate(const gchar *text)
+{
+    g_print("Checking ICE candidate from %s...\n", peer_id);
+    g_print("'new-ice-candidate' message=%s\n", text);
+
+    JsonNode *root;
+    JsonObject *object, *child;
+    JsonParser *parser = json_parser_new();
+    if (!json_parser_load_from_data(parser, text, -1, NULL))
+    {
+        g_printerr("Unknown message '%s', ignoring", text);
+        g_object_unref(parser);
+        return FALSE;
+    }
+
+    root = json_parser_get_root(parser);
+    if (!JSON_NODE_HOLDS_OBJECT(root))
+    {
+        g_printerr("Unknown json message '%s', ignoring", text);
+        g_object_unref(parser);
+        return FALSE;
+    }
+
+    object = json_node_get_object(root);
+    if (json_object_has_member(object, "candidate"))
+    {
+        const gchar *candidate;
+        gint sdpmlineindex;
+
+        child = json_object_get_object_member(object, "candidate");
+        candidate = json_object_get_string_member(child, "candidate");
+        sdpmlineindex = json_object_get_int_member(child, "sdpMLineIndex");
+
+        // Add ice candidate sent by remote peer.
+        g_signal_emit_by_name(webrtc1, "add-ice-candidate", sdpmlineindex,
+                              candidate);
+
+        return TRUE;
+    }
+    else
+    {
+        g_printerr("Ignoring unknown JSON message:\n%s\n", text);
+    }
+    g_object_unref(parser);
+
+    return FALSE;
+}
+
+/**
+ * Check camera's answer to our video offer, and accept or reject call.
+ */
+static gboolean accept_call(const gchar *text)
+{
+    g_print("Checking video answer from %s...\n", peer_id);
+    g_print("'video-answer' message=%s\n", text);
+
+    JsonNode *root;
+    JsonObject *object, *child;
+    JsonParser *parser = json_parser_new();
+    if (!json_parser_load_from_data(parser, text, -1, NULL))
+    {
+        g_printerr("Unknown message '%s', ignoring", text);
+        g_object_unref(parser);
+        return FALSE;
+    }
+
+    root = json_parser_get_root(parser);
+    if (!JSON_NODE_HOLDS_OBJECT(root))
+    {
+        g_printerr("Unknown json message '%s', ignoring", text);
+        g_object_unref(parser);
+        return FALSE;
+    }
+
+    object = json_node_get_object(root);
+    if (json_object_has_member(object, "sdp"))
+    {
+        int ret;
+        GstSDPMessage *sdp;
+        const gchar *text, *sdptype;
+        GstWebRTCSessionDescription *answer;
+
+        g_assert_cmphex(app_state, ==, PEER_CALL_NEGOTIATING);
+
+        child = json_object_get_object_member(object, "sdp");
+
+        if (!json_object_has_member(child, "type"))
+        {
+            cleanup_and_quit_loop("ERROR: received SDP without 'type'",
+                                  PEER_CALL_ERROR);
+            return FALSE;
+        }
+
+        sdptype = json_object_get_string_member(child, "type");
+
+        text = json_object_get_string_member(child, "sdp");
+        ret = gst_sdp_message_new(&sdp);
+        g_assert_cmphex(ret, ==, GST_SDP_OK);
+        ret = gst_sdp_message_parse_buffer((guint8 *)text, strlen(text), sdp);
+        g_assert_cmphex(ret, ==, GST_SDP_OK);
+
+        if (g_str_equal(sdptype, "answer"))
+        {
+            g_print("Parsed SDP from 'video-answer':\n%s\n", text);
+            answer = gst_webrtc_session_description_new(GST_WEBRTC_SDP_TYPE_ANSWER,
+                                                        sdp);
+            g_assert_nonnull(answer);
+
+            // Set remote description on our pipeline.
+            {
+                GstPromise *promise = gst_promise_new();
+                g_signal_emit_by_name(webrtc1, "set-remote-description", answer,
+                                      promise);
+                gst_promise_interrupt(promise);
+                gst_promise_unref(promise);
+            }
+            app_state = PEER_CALL_STARTED;
+            return TRUE;
+        }
+        else
+        {
+            g_printerr("Expected answer but received offer:\n%s\n", text);
+        }
+    }
+    else
+    {
+        g_printerr("Ignoring unknown JSON message:\n%s\n", text);
+    }
+    g_object_unref(parser);
+
     return FALSE;
 }
 
@@ -863,9 +1001,48 @@ void bind_events()
                                                bool isAck, sio::message::list &ack_resp)
                                            {
                                                _lock.lock();
-                                               g_print("RECV: 'video-answer' -> \n");
+                                               if (app_state == PEER_CALL_NEGOTIATING)
+                                               {
+                                                   g_print("RECV: 'video-answer' -> checking\n");
+
+                                                   if (accept_call(data->get_string().c_str()))
+                                                   {
+                                                       g_print("Video answer was accepted, waiting for ICE candidates...\n");
+                                                   }
+                                                   else
+                                                   {
+                                                       g_print("Video answer was rejected, now quitting...\n");
+                                                       cleanup_and_quit_loop("ERROR: Failed to setup call!",
+                                                                             PEER_CALL_ERROR);
+                                                   }
+                                               }
+                                               else
+                                               {
+                                                   g_printerr("RECV: 'video'answer', but app is in wrong state!\n");
+                                               }
                                                _lock.unlock();
                                            }));
+
+    current_socket->on("new-ice-candidate", sio::socket::event_listener_aux(
+                                                [&](string const &name, sio::message::ptr const &data,
+                                                    bool isAck, sio::message::list &ack_resp)
+                                                {
+                                                    _lock.lock();
+                                                    g_print("RECV: 'new-ice-candidate' -> adding...\n");
+
+                                                    if (add_ice_candidate(data->get_string().c_str()))
+                                                    {
+                                                        g_print("ICE candidate was added\n");
+                                                    }
+                                                    else
+                                                    {
+                                                        g_print("ICE candidate was rejected, now quitting...\n");
+                                                        cleanup_and_quit_loop("ERROR: Failed to setup call!",
+                                                                              PEER_CALL_ERROR);
+                                                    }
+
+                                                    _lock.unlock();
+                                                }));
 
     current_socket->on("hang-up", sio::socket::event_listener_aux(
                                       [&](string const &name, sio::message::ptr const &data,
@@ -884,15 +1061,6 @@ void bind_events()
                                           g_print("RECV: 'message' -> \n");
                                           _lock.unlock();
                                       }));
-
-    current_socket->on("ping", sio::socket::event_listener_aux(
-                                   [&](string const &name, sio::message::ptr const &data,
-                                       bool isAck, sio::message::list &ack_resp)
-                                   {
-                                       _lock.lock();
-                                       g_print("RECV: 'ping' -> \n");
-                                       _lock.unlock();
-                                   }));
 
     current_socket->on("connect_error", sio::socket::event_listener_aux(
                                             [&](string const &name, sio::message::ptr const &data,
