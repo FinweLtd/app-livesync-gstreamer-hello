@@ -1423,5 +1423,9 @@ And, lo and behold, the socket isn't closed anymore and from the SignalServer's 
 - Added bind_events() and handling for all used messages via SignalServer
 - This started a sequence of actions where more and more functions were copied from webrtc-sendrecv to initiate and build a video call: ICE gathering and exchange from C++ client to camera, building and starting a Gstreamer pipeline, creating and transmitting a video offer from C++ client to camera, receiving and processing a video answer from camera, receiving and adding ICE candidates from camera, and opening video stream from camera
 - A compatibility issue between Google WebRTC library (used in 360 camera app) and C/C++ Gstremer WebRTC library forced to make a tiny configuration change to the camera app as well (must be updated to the Labpano camera as an .apk install): bundle policy was changed in camera from max-bundle to balanced, as C/C++ client did not include bundle group to its SDP description, no matter how we configured it.
-- This is the 1st version that successfully playes 360 video stream in a window on Ubuntu VM
+- This is the 1st version that successfully plays 360 video stream in a window on Ubuntu VM
 
+#### Step 4: Simple user interface
+- Add help and prompt prints
+- Start listening to user input i.e. commands written to the console
+- Add support for projection change ("equi", "rect")

@@ -190,6 +190,145 @@ static JsonNode *get_json_node_from_string(JsonParser *parser,
 }
 
 /**
+ * Print help to console.
+ */
+static void print_help()
+{
+    g_print("Type a command and hit ENTER to control the camera:\n");
+    g_print("===================================================\n");
+    g_print("help = print this message\n");
+    g_print("equi = switch camera to equirectangular projection\n");
+    g_print("rect = switch camera to rectilinear projection\n");
+    g_print("exit = exit from video call and quit the program\n");
+    g_print("===================================================\n");
+}
+
+/**
+ * Simple prompt.
+ */
+static void prompt()
+{
+    g_print("LiveSYNC> ");
+}
+
+/**
+ * Response to user input.
+ */
+static void handlecommand(gchar *sz)
+{
+    gchar *text;
+    JsonObject *ice, *msg;
+    string op;
+    string type;
+
+    if (strcmp(sz, "help\n") == 0)
+    {
+        print_help();
+    }
+    else if (strcmp(sz, "equi\n") == 0)
+    {
+        op = "projection";
+        type = "equirectangular";
+    }
+    else if (strcmp(sz, "rect\n") == 0)
+    {
+        op = "projection";
+        type = "rectilinear";
+    }
+    else if (strcmp(sz, "exit\n") == 0)
+    {
+        cleanup_and_quit_loop("User chose to exit the app.",
+                              APP_STATE_UNKNOWN);
+    }
+    else
+    {
+        g_print("\nUnknown command: %s\n", sz);
+        print_help();
+    }
+
+    if (!op.empty())
+    {
+        msg = json_object_new();
+        json_object_set_string_member(msg, "target", peer_id);
+        json_object_set_string_member(msg, "source", own_id);
+        json_object_set_string_member(msg, "op", op.c_str());
+        if (!type.empty())
+        {
+            json_object_set_string_member(msg, "type", type.c_str());
+        }
+        text = get_string_from_json_object(msg);
+        json_object_unref(msg);
+        g_print("SEND: 'message', %s\n", text);
+        current_socket->emit(
+            "message", (std::string)text, [&](sio::message::list const &msg)
+            {
+                // Prevent flooding the log.
+                //g_print("ACK:  'new-ice-candidate', \n");
+            });
+        g_free(text);
+    }
+
+    prompt();
+}
+
+/**
+ * Listen for user's commands from keyboard, and control camera accordingly.
+ */
+static gboolean mycallback(GIOChannel *channel, GIOCondition cond, gpointer data)
+{
+    gchar *str_return;
+    gsize length;
+    gsize terminator_pos;
+    GError *error = NULL;
+
+    if (g_io_channel_read_line(channel, &str_return, &length, &terminator_pos, &error) == G_IO_STATUS_ERROR)
+    {
+        g_warning("Something went wrong");
+    }
+    if (error != NULL)
+    {
+        g_printerr("Error: %s", error->message);
+        exit(1);
+    }
+
+    handlecommand(str_return);
+
+    g_free(str_return);
+    return TRUE;
+}
+
+/**
+ * Listen for user's commands from keyboard, and control camera accordingly.
+ */
+static void handle_user_input()
+{
+
+    print_help();
+
+    /*
+    for (std::string line; std::getline(std::cin, line);)
+    {
+        if (line.length() > 0)
+        {
+            if (line == "$exit")
+            {
+                cleanup_and_quit_loop("User decided to quit the app. Bye!", APP_STATE_UNKNOWN);
+            }
+            else if (line.length() > 5 && line.substr(0, 5) == "$nsp ")
+            {
+                string new_nsp = line.substr(5);
+
+            }
+            //current_socket->emit("new message", line);
+            _lock.lock();
+            //EM("\t\t\t" << line << ":"
+            //            << "You");
+            _lock.unlock();
+        }
+    }*/
+}
+
+/**
  * Called when we need to handle a media stream.
  */
 static void handle_media_stream(GstPad *pad, GstElement *pipe,
@@ -234,6 +373,11 @@ static void handle_media_stream(GstPad *pad, GstElement *pipe,
 
     ret = gst_pad_link(pad, qpad);
     g_assert_cmphex(ret, ==, GST_PAD_LINK_OK);
+
+    g_print("\n*** We are LIVE and video stream from remote camera should be visible on screen! ***\n");
+
+    print_help();
+    prompt();
 }
 
 /**
@@ -276,6 +420,8 @@ static void on_incoming_stream(GstElement *webrtc, GstPad *pad, GstElement *pipe
 {
     GstElement *decodebin;
     GstPad *sinkpad;
+
+    g_print("-> Incoming stream\n");
 
     if (GST_PAD_DIRECTION(pad) != GST_PAD_SRC)
         return;
@@ -974,7 +1120,25 @@ void bind_events()
                                                bool isAck, sio::message::list &ack_resp)
                                            {
                                                _lock.lock();
-                                               g_print("RECV: 'video-format' -> \n");
+                                               if (data->get_flag() == sio::message::flag_string)
+                                               {
+                                                   JsonParser *parser = json_parser_new();
+                                                   JsonNode *root = get_json_node_from_string(parser,
+                                                                                              data->get_string());
+                                                   JsonReader *reader = json_reader_new(root);
+                                                   json_reader_read_member(reader, "projection");
+                                                   string projection = json_reader_get_string_value(reader);
+                                                   json_reader_end_member(reader);
+                                                   g_object_unref(reader);
+                                                   g_object_unref(parser);
+                                                   g_print("RECV: 'video-format', projection=%s\n",
+                                                           projection.c_str());
+                                               }
+                                               else
+                                               {
+                                                   g_printerr("RECV: invalid data, check API!\n");
+                                               }
+
                                                _lock.unlock();
                                            }));
 
@@ -1297,6 +1461,12 @@ int main(int argc, char *argv[])
 
     // Create the main loop, which keeps the app running.
     loop = g_main_loop_new(nullptr, FALSE);
+
+    // Setup user input for handling commands during streaming.
+    GIOChannel *channel = g_io_channel_unix_new(STDIN_FILENO);
+    g_io_channel_set_encoding(channel, NULL, &error);
+    //prompt();
+    g_io_add_watch(channel, G_IO_IN, mycallback, NULL);
 
     // Begin operation by attempting to connect to the signal server.
     connect_to_socketio_server_async();
