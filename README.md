@@ -1430,3 +1430,5 @@ And, lo and behold, the socket isn't closed anymore and from the SignalServer's 
 - Start listening to user input i.e. commands written to the console
 - Add support for projection change ("equi", "rect")
 - Add support for other control commands ("up", "down", etc.)
+- Changed Gstreamer pipeline for receive only mode
+- Added configuration options for VP8 and H264 encoding

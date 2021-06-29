@@ -712,26 +712,12 @@ static void on_ice_gathering_state_notify(GstElement *webrtcbin,
 static gboolean start_pipeline(void)
 {
     GstStateChangeReturn ret;
+
+    /*
+    // Send-receive pipeline, from the original example (audio removed):
     GError *error = NULL;
-    GstCaps *video_caps;
-    GstWebRTCRTPTransceiver *trans = NULL;
 
     pipe1 =
-        /*
-        gst_parse_launch("webrtcbin name=sendrecv stun-server=stun://" STUN_SERVER " "
-                         //" ! rtpvp8depay ! vp8dec ! videoconvert ! queue ! fakevideosink "
-                         //"videotestsrc is-live=true pattern=ball ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay ! "
-                         //"queue ! " RTP_CAPS_VP8 "96 ! sendrecv. "
-                         , &error);
-    */
-        /*
-        gst_parse_launch("webrtcbin name=sendrecv stun-server=stun://" STUN_SERVER " "
-                         "audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay ! "
-                         "queue ! " RTP_CAPS_OPUS "97 ! sendrecv. ",
-                         &error);
-    */
-
-        // bundle-policy=max-bundle
         gst_parse_launch("webrtcbin name=sendrecv bundle-policy=max-compat " STUN_SERVER
                          "videotestsrc is-live=true pattern=ball ! videoconvert ! queue ! vp8enc deadline=1 ! rtpvp8pay ! "
                          "queue ! " RTP_CAPS_VP8 "96 ! sendrecv. "
@@ -739,6 +725,7 @@ static gboolean start_pipeline(void)
                          //                   "queue ! " RTP_CAPS_OPUS "97 ! sendrecv. "
                          ,
                          &error);
+        
 
     if (error)
     {
@@ -749,6 +736,36 @@ static gboolean start_pipeline(void)
 
     webrtc1 = gst_bin_get_by_name(GST_BIN(pipe1), "sendrecv");
     g_assert_nonnull(webrtc1);
+    */
+    
+    // Receive only pipeline, created manually:
+    GstWebRTCRTPTransceiverDirection direction;
+    GstWebRTCRTPTransceiver *trans = NULL;
+    GstCaps *video_caps;
+
+    pipe1 = gst_pipeline_new("test-pipeline");
+
+    webrtc1 = gst_element_factory_make("webrtcbin", "sendrecv");
+    g_assert_nonnull(pipe1);
+
+    g_object_set(webrtc1, "bundle-policy", 3, NULL);
+    gst_bin_add_many(GST_BIN(pipe1), webrtc1, NULL);
+    gst_element_sync_state_with_parent(webrtc1);
+
+    g_print("setting video transceiver\n");
+    direction = GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY;
+
+    // VP8 encoder (works with Labpano camera).
+    video_caps = gst_caps_from_string(RTP_CAPS_VP8 "96");
+
+    // Or, H264 encoder (also works with Labpano camera).
+    //video_caps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=" RTP_PAYLOAD_TYPE ",clock-rate=90000,packetization-mode=(string)1, profile-level-id=(string)42c016");
+
+    g_signal_emit_by_name(webrtc1, "add-transceiver", direction, video_caps, &trans);
+
+    gst_caps_unref(video_caps);
+    g_object_set(trans, "fec-type", GST_WEBRTC_FEC_TYPE_ULP_RED, "fec-percentage", 100, NULL);
+    gst_object_unref(trans);
 
     /* This is the gstwebrtc entry point where we create the offer and so on. It
      * will be called when the pipeline goes to PLAYING. */
@@ -780,15 +797,6 @@ static gboolean start_pipeline(void)
 
     g_signal_connect(webrtc1, "on-data-channel", G_CALLBACK(on_data_channel),
                      NULL);
-    */
-
-    // From sendonly/webrtc-recvonly-h264.c:
-    // Create a 2nd transceiver for the receive only video stream.
-    /*
-    video_caps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=" RTP_PAYLOAD_TYPE ",clock-rate=90000,packetization-mode=(string)1, profile-level-id=(string)42c016");
-    g_signal_emit_by_name(webrtc1, "add-transceiver", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, video_caps, &trans);
-    gst_caps_unref(video_caps);
-    gst_object_unref(trans);
     */
 
     /* Incoming streams will be exposed via this signal */
