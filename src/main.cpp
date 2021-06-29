@@ -220,6 +220,9 @@ static void handlecommand(gchar *sz)
     JsonObject *ice, *msg;
     string op;
     string type;
+    double value;
+    double x;
+    double y;
 
     if (strcmp(sz, "help\n") == 0)
     {
@@ -234,6 +237,47 @@ static void handlecommand(gchar *sz)
     {
         op = "projection";
         type = "rectilinear";
+    }
+    else if (strcmp(sz, "up\n") == 0)
+    {
+        op = "up";
+    }
+    else if (strcmp(sz, "down\n") == 0)
+    {
+        op = "down";
+    }
+    else if (strcmp(sz, "left\n") == 0)
+    {
+        op = "left";
+    }
+    else if (strcmp(sz, "right\n") == 0)
+    {
+        op = "right";
+    }
+    else if (strcmp(sz, "zoom-in\n") == 0)
+    {
+        op = "zoom-in";
+    }
+    else if (strcmp(sz, "zoom-out\n") == 0)
+    {
+        op = "zoom-out";
+    }
+    else if (strcmp(sz, "zoom-delta\n") == 0)
+    {
+        op = "zoom-delta";
+        value = -4.000244140625;
+    }
+    else if (strcmp(sz, "pan-vector\n") == 0)
+    {
+        op = "pan-vector";
+        x = 0.0028697826244212963;
+        y = 0.17291244430158606;
+    }
+    else if (strcmp(sz, "pan-tilt\n") == 0)
+    {
+        op = "pan-tilt";
+        x = 0.011101582502542789;
+        y = -0.0024806650439698494;
     }
     else if (strcmp(sz, "exit\n") == 0)
     {
@@ -255,6 +299,18 @@ static void handlecommand(gchar *sz)
         if (!type.empty())
         {
             json_object_set_string_member(msg, "type", type.c_str());
+        }
+        if (value != 0)
+        {
+            json_object_set_double_member(msg, "value", value);
+        }
+        if (x != 0)
+        {
+            json_object_set_double_member(msg, "x", x);
+        }
+        if (y != 0)
+        {
+            json_object_set_double_member(msg, "y", y);
         }
         text = get_string_from_json_object(msg);
         json_object_unref(msg);
@@ -295,37 +351,6 @@ static gboolean mycallback(GIOChannel *channel, GIOCondition cond, gpointer data
 
     g_free(str_return);
     return TRUE;
-}
-
-/**
- * Listen for user's commands from keyboard, and control camera accordingly.
- */
-static void handle_user_input()
-{
-
-    print_help();
-
-    /*
-    for (std::string line; std::getline(std::cin, line);)
-    {
-        if (line.length() > 0)
-        {
-            if (line == "$exit")
-            {
-                cleanup_and_quit_loop("User decided to quit the app. Bye!", APP_STATE_UNKNOWN);
-            }
-            else if (line.length() > 5 && line.substr(0, 5) == "$nsp ")
-            {
-                string new_nsp = line.substr(5);
-
-            }
-            //current_socket->emit("new message", line);
-            _lock.lock();
-            //EM("\t\t\t" << line << ":"
-            //            << "You");
-            _lock.unlock();
-        }
-    }*/
 }
 
 /**
