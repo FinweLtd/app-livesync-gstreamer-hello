@@ -1432,3 +1432,4 @@ And, lo and behold, the socket isn't closed anymore and from the SignalServer's 
 - Add support for other control commands ("up", "down", etc.)
 - Changed Gstreamer pipeline for receive only mode
 - Added configuration options for VP8 and H264 encoding
+- Made state handling support different startup orders (camera or player first)

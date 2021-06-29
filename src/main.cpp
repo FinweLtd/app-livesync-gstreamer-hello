@@ -66,7 +66,9 @@ static const gchar *peer_id = nullptr;
 static const gchar *server_url = nullptr;
 static gboolean disable_ssl = FALSE;
 static gboolean remote_is_offerer = FALSE;
+static gboolean camera_ready = FALSE;
 static gboolean camera_free = FALSE;
+static gboolean init_completed = FALSE;
 
 static GOptionEntry entries[] = {
     {"server", 0, 0, G_OPTION_ARG_STRING, &server_url,
@@ -737,7 +739,7 @@ static gboolean start_pipeline(void)
     webrtc1 = gst_bin_get_by_name(GST_BIN(pipe1), "sendrecv");
     g_assert_nonnull(webrtc1);
     */
-    
+
     // Receive only pipeline, created manually:
     GstWebRTCRTPTransceiverDirection direction;
     GstWebRTCRTPTransceiver *trans = NULL;
@@ -960,13 +962,11 @@ static gboolean accept_call(const gchar *text)
 /**
  * Try to call to the camera device.
  */
-static gboolean setup_call(const gchar *callTarget)
+static gboolean setup_call()
 {
-    g_print("Trying to call to %s ...\n", callTarget);
+    g_print("Trying to call to %s ...\n", peer_id);
 
     app_state = PEER_CONNECTING;
-
-    peer_id = g_strdup(callTarget);
 
     // Note: unlike webrtc-sendrecv example, we don't have any mechanism in
     // place for reserving a peer for an upcoming call via the SignalServer
@@ -1026,10 +1026,115 @@ public:
 };
 
 /**
+ * Send a response to SignalServer's 'init' message (register us as a receiver).
+ */
+static void response_to_init(sio::socket::ptr current_socket)
+{
+    // emit: {'sub':'Player-Gstreamer', 'role': 'receiver'}
+    // sub: Any name that we want to use from ourself, here 'Player-Gstreamer'.
+    // role: We will be a 'receiver', the 360 camera will be a 'sender'.
+
+    // The response must be sent as a JSON object - NOT just a string that
+    // looks like JSON. Hence, we need to use Socket.IO's object_message type:
+    sio::message::ptr jsonObj = sio::object_message::create();
+    jsonObj->get_map()["sub"] = sio::string_message::create(own_id);
+    jsonObj->get_map()["role"] = sio::string_message::create("receiver");
+    g_print("SEND: 'init', {'sub':'%s', 'role': 'receiver'} \n", own_id);
+    current_socket->emit(
+        "init", jsonObj, [&](sio::message::list const &msg)
+        {
+            // The SignalServer will response with an ACK and a boolean status.
+            g_print("ACK:  'init', ");
+            if (msg.size() > 0)
+            {
+                sio::message::ptr ack = msg[0]; // There should be only one msg.
+                switch (ack->get_flag())
+                {
+                case sio::message::flag_boolean:
+                {
+                    // ACK to 'init' message should contain a boolean response.
+                    bool initialized = ack->get_bool();
+                    if (initialized)
+                    {
+                        g_print("registration OK\n");
+                        app_state = SERVER_REGISTERED;
+
+                        init_completed = TRUE;
+                        if (camera_free && camera_ready)
+                        {
+                            if (!setup_call())
+                            {
+                                cleanup_and_quit_loop("ERROR: Failed to setup call!\n",
+                                                      PEER_CALL_ERROR);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        g_print("registration FAILED\n");
+                        app_state = SERVER_REGISTRATION_ERROR;
+
+                        cleanup_and_quit_loop("Server registration failed", APP_STATE_ERROR);
+                    }
+                    break;
+                }
+                /*
+                case sio::message::flag_integer:
+                case sio::message::flag_double:
+                case sio::message::flag_string:
+                case sio::message::flag_binary:
+                case sio::message::flag_array:
+                case sio::message::flag_object:
+                case sio::message::flag_null:
+                */
+                default:
+                {
+                    g_printerr("Unexpected response type from signaling server: %d",
+                               ack->get_flag());
+                    break;
+                }
+                }
+            }
+            else
+            {
+                g_printerr("Unexpected response type from signaling server: empty ack\n");
+            }
+        });
+}
+
+/**
  * Bind to known signals and handle them.
  */
 void bind_events()
 {
+    // Upon connect, the SignalServer sends 'init' request and we must respond.
+    // (VS Code auto-format does a bad job formatting here... sorry!)
+    current_socket->on("init", sio::socket::event_listener_aux(
+                                   [&](string const &name, sio::message::ptr const &data,
+                                       bool isAck, sio::message::list &ack_resp)
+                                   {
+                                       _lock.lock();
+
+                                       bool response = false;
+                                       if (app_state == SERVER_CONNECTED)
+                                       {
+                                           g_print("RECV: 'init' -> Attempt to register...\n");
+                                           app_state = SERVER_REGISTERING;
+                                           response = true;
+                                       }
+
+                                       _cond.notify_all();
+                                       _lock.unlock();
+
+                                       // No need to listen to "init" anymore.
+                                       current_socket->off("init");
+
+                                       if (response)
+                                       {
+                                           response_to_init(current_socket);
+                                       }
+                                   }));
+
     // When a camera device has successfully connected to the SignalServer.
     current_socket->on("device-authenticated", sio::socket::event_listener_aux(
                                                    [&](string const &name, sio::message::ptr const &data,
@@ -1059,17 +1164,16 @@ void bind_events()
                                                    g_print("RECV: 'device-ready', %s\n",
                                                            data->get_string().c_str());
 
-                                                   if (camera_free)
+                                                   peer_id = g_strdup(data->get_string().c_str());
+                                                   camera_ready = TRUE;
+
+                                                   if (camera_free && init_completed)
                                                    {
-                                                       if (!setup_call(data->get_string().c_str()))
+                                                       if (!setup_call())
                                                        {
-                                                           cleanup_and_quit_loop("ERROR: Failed to setup call!",
+                                                           cleanup_and_quit_loop("ERROR: Failed to setup call!\n",
                                                                                  PEER_CALL_ERROR);
                                                        }
-                                                   }
-                                                   else
-                                                   {
-                                                       g_print("Camera is ready but it is not free; not calling!");
                                                    }
                                                }
                                                else
@@ -1131,8 +1235,17 @@ void bind_events()
 
                                                    if (conClients < maxConClients && strClients < maxStrClients)
                                                    {
-                                                       g_print("Camera is currently free, we can try to call it.\n");
+                                                       g_print("Camera is currently free.\n");
                                                        camera_free = TRUE;
+
+                                                       if (camera_ready && init_completed)
+                                                       {
+                                                           if (!setup_call())
+                                                           {
+                                                               cleanup_and_quit_loop("ERROR: Failed to setup call!\n",
+                                                                                     PEER_CALL_ERROR);
+                                                           }
+                                                       }
                                                    }
                                                    else
                                                    {
@@ -1269,75 +1382,6 @@ void bind_events()
                                             }));
 }
 
-/**
- * Send a response to SignalServer's 'init' message (register us as a receiver).
- */
-static void response_to_init(sio::socket::ptr current_socket)
-{
-    // emit: {'sub':'Player-Gstreamer', 'role': 'receiver'}
-    // sub: Any name that we want to use from ourself, here 'Player-Gstreamer'.
-    // role: We will be a 'receiver', the 360 camera will be a 'sender'.
-
-    // The response must be sent as a JSON object - NOT just a string that
-    // looks like JSON. Hence, we need to use Socket.IO's object_message type:
-    sio::message::ptr jsonObj = sio::object_message::create();
-    jsonObj->get_map()["sub"] = sio::string_message::create(own_id);
-    jsonObj->get_map()["role"] = sio::string_message::create("receiver");
-    g_print("SEND: 'init', {'sub':'%s', 'role': 'receiver'} \n", own_id);
-    current_socket->emit(
-        "init", jsonObj, [&](sio::message::list const &msg)
-        {
-            // The SignalServer will response with an ACK and a boolean status.
-            g_print("ACK:  'init', ");
-            if (msg.size() > 0)
-            {
-                sio::message::ptr ack = msg[0]; // There should be only one msg.
-                switch (ack->get_flag())
-                {
-                case sio::message::flag_boolean:
-                {
-                    // ACK to 'init' message should contain a boolean response.
-                    bool initialized = ack->get_bool();
-                    if (initialized)
-                    {
-                        g_print("registration OK\n");
-                        app_state = SERVER_REGISTERED;
-
-                        bind_events();
-                    }
-                    else
-                    {
-                        g_print("registration FAILED\n");
-                        app_state = SERVER_REGISTRATION_ERROR;
-
-                        cleanup_and_quit_loop("Server registration failed", APP_STATE_ERROR);
-                    }
-                    break;
-                }
-                /*
-                case sio::message::flag_integer:
-                case sio::message::flag_double:
-                case sio::message::flag_string:
-                case sio::message::flag_binary:
-                case sio::message::flag_array:
-                case sio::message::flag_object:
-                case sio::message::flag_null:
-                */
-                default:
-                {
-                    g_printerr("Unexpected response type from signaling server: %d",
-                               ack->get_flag());
-                    break;
-                }
-                }
-            }
-            else
-            {
-                g_printerr("Unexpected response type from signaling server: empty ack\n");
-            }
-        });
-}
-
 /*
  * Connect to the signalling server. This is the entrypoint for everything else.
  */
@@ -1376,33 +1420,8 @@ static void connect_to_socketio_server_async(void)
     // The SignalServer uses the default namespace '/'.
     g_print("Namespace: %s\n", current_socket->get_namespace().c_str());
 
-    // Upon connect, the SignalServer sends 'init' request and we must respond.
-    // (VS Code auto-format does a bad job formatting here... sorry!)
-    current_socket->on("init", sio::socket::event_listener_aux(
-                                   [&](string const &name, sio::message::ptr const &data,
-                                       bool isAck, sio::message::list &ack_resp)
-                                   {
-                                       _lock.lock();
-
-                                       bool response = false;
-                                       if (app_state == SERVER_CONNECTED)
-                                       {
-                                           g_print("RECV: 'init' -> Attempt to register...\n");
-                                           app_state = SERVER_REGISTERING;
-                                           response = true;
-                                       }
-
-                                       _cond.notify_all();
-                                       _lock.unlock();
-
-                                       // No need to listen to "init" anymore.
-                                       current_socket->off("init");
-
-                                       if (response)
-                                       {
-                                           response_to_init(current_socket);
-                                       }
-                                   }));
+    // Bind events to handle them.
+    bind_events();
 }
 
 /**
